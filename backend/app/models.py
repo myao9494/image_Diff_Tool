@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class PageInfo(BaseModel):
+    index: int
+    width: int
+    height: int
+
+
+class AnalyzeResponse(BaseModel):
+    filename: str
+    format: str
+    page_count: int
+    pages: list[PageInfo]
+
+
+class AlignmentInfo(BaseModel):
+    success: bool
+    method: str
+    warning: str | None = None
+    matches: int = 0
+    inliers: int = 0
+    matrix: list[list[float]] | None = None
+
+
+class DiffRect(BaseModel):
+    x: int
+    y: int
+    width: int
+    height: int
+    area: int
+
+
+class ImagePayload(BaseModel):
+    mime_type: str = "image/png"
+    data: str = Field(description="Base64 encoded image data without data URI prefix")
+
+
+class DiffResponse(BaseModel):
+    page_a: int
+    page_b: int
+    category: str
+    width: int
+    height: int
+    alignment: AlignmentInfo
+    image_a: ImagePayload
+    image_b_aligned: ImagePayload
+    overlay: ImagePayload
+    mask: ImagePayload
+    diff_rects: list[DiffRect]
+    diff_pixels: int
+    diff_ratio: float
