@@ -124,6 +124,16 @@ class TestBackendPipeline(unittest.TestCase):
 
         self.assertGreaterEqual(len(diff["rects"]), 2)
 
+    def test_visual_diff_keeps_larger_candidate_canvas(self):
+        reference = np.full((80, 100, 3), 255, dtype=np.uint8)
+        changed = np.full((110, 140, 3), 255, dtype=np.uint8)
+        changed[90:105, 115:135] = (0, 0, 0)
+
+        diff = build_visual_diff(reference, changed, threshold=0.1)
+
+        self.assertEqual(diff["overlay"].shape[:2], (110, 140))
+        self.assertTrue(any(rect["x"] >= 110 and rect["y"] >= 85 for rect in diff["rects"]))
+
     def test_excalidraw_rasterizes_elements_outside_default_canvas(self):
         payload = {
             "type": "excalidraw",
@@ -195,8 +205,37 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertTrue(body["alignment"]["success"], body["alignment"]["warning"])
-        self.assertEqual(body["width"], 584)
-        self.assertEqual(body["height"], 158)
+        self.assertGreaterEqual(body["width"], 584)
+        self.assertGreaterEqual(body["height"], 158)
+
+    def test_diff_response_keeps_larger_unmatched_candidate_area(self):
+        reference = Image.new("RGB", (100, 80), "white")
+        candidate = Image.new("RGB", (140, 110), "white")
+        for x in range(115, 135):
+            for y in range(90, 105):
+                candidate.putpixel((x, y), (0, 0, 0))
+
+        reference_buf = BytesIO()
+        candidate_buf = BytesIO()
+        reference.save(reference_buf, format="PNG")
+        candidate.save(candidate_buf, format="PNG")
+        reference_buf.seek(0)
+        candidate_buf.seek(0)
+
+        response = self.client.post(
+            "/api/diff",
+            files={
+                "file_a": ("small.png", reference_buf, "image/png"),
+                "file_b": ("large.png", candidate_buf, "image/png"),
+            },
+            data={"page_a": "0", "page_b": "0", "category": "汎用"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["width"], 140)
+        self.assertEqual(body["height"], 110)
+        self.assertTrue(any(rect["x"] >= 110 and rect["y"] >= 85 for rect in body["diff_rects"]))
 
     def test_diff_threshold_controls_sensitivity(self):
         def request_with_threshold(value):

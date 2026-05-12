@@ -17,6 +17,7 @@ CATEGORY_PARAMS = {
 @dataclass
 class AlignmentResult:
     image: np.ndarray
+    reference_image: np.ndarray | None
     success: bool
     method: str
     warning: str | None
@@ -81,10 +82,10 @@ def align_to_reference(
     inliers, matches, transform_label, matrix = max(attempts, key=lambda item: (item[0], item[1]))
     matrix, refined = _refine_with_ecc(fixed, moving, matrix, reference_bgr.shape[:2])
 
-    h, w = reference_bgr.shape[:2]
-    aligned = cv2.warpPerspective(candidate_bgr, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
+    reference_canvas, aligned = _warp_pair_to_union_canvas(reference_bgr, candidate_bgr, matrix)
     return AlignmentResult(
         image=aligned,
+        reference_image=reference_canvas,
         success=True,
         method=f"{transform_label} + robust transform" + (" + ECC refine" if refined else ""),
         warning=None,
@@ -151,10 +152,10 @@ def _align_with_anchor_region(
     if attempts:
         inliers, matches, transform_label, matrix = max(attempts, key=lambda item: (item[0], item[1]))
         matrix, refined = _refine_with_ecc(fixed, moving, matrix, reference_bgr.shape[:2])
-        h, w = reference_bgr.shape[:2]
-        aligned = cv2.warpPerspective(candidate_bgr, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
+        reference_canvas, aligned = _warp_pair_to_union_canvas(reference_bgr, candidate_bgr, matrix)
         return AlignmentResult(
             image=aligned,
+            reference_image=reference_canvas,
             success=True,
             method=f"{transform_label} + robust transform" + (" + ECC refine" if refined else ""),
             warning=None,
@@ -213,10 +214,10 @@ def _template_anchor_fallback(
     cand_center_x = match_x + match_w / 2.0
     cand_center_y = match_y + match_h / 2.0
     matrix = np.array([[1.0, 0.0, ref_center_x - cand_center_x], [0.0, 1.0, ref_center_y - cand_center_y], [0.0, 0.0, 1.0]])
-    ref_h, ref_w = reference_bgr.shape[:2]
-    aligned = cv2.warpPerspective(candidate_bgr, matrix, (ref_w, ref_h), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
+    reference_canvas, aligned = _warp_pair_to_union_canvas(reference_bgr, candidate_bgr, matrix)
     return AlignmentResult(
         image=aligned,
+        reference_image=reference_canvas,
         success=True,
         method="anchor region template translation",
         warning=None,
@@ -349,6 +350,7 @@ def _prepare_gray(image: np.ndarray, category: str) -> np.ndarray:
 def _failed(image: np.ndarray, warning: str, matches: int = 0, inliers: int = 0) -> AlignmentResult:
     return AlignmentResult(
         image=image,
+        reference_image=None,
         success=False,
         method="none",
         warning=warning,
@@ -356,6 +358,38 @@ def _failed(image: np.ndarray, warning: str, matches: int = 0, inliers: int = 0)
         inliers=inliers,
         matrix=None,
     )
+
+
+def _warp_pair_to_union_canvas(
+    reference_bgr: np.ndarray,
+    candidate_bgr: np.ndarray,
+    matrix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    ref_h, ref_w = reference_bgr.shape[:2]
+    cand_h, cand_w = candidate_bgr.shape[:2]
+    ref_corners = np.float32([[0, 0], [ref_w, 0], [ref_w, ref_h], [0, ref_h]]).reshape(-1, 1, 2)
+    cand_corners = np.float32([[0, 0], [cand_w, 0], [cand_w, cand_h], [0, cand_h]]).reshape(-1, 1, 2)
+    projected = cv2.perspectiveTransform(cand_corners, matrix)
+    all_corners = np.vstack([ref_corners, projected]).reshape(-1, 2)
+
+    min_xy = np.floor(all_corners.min(axis=0)).astype(int)
+    max_xy = np.ceil(all_corners.max(axis=0)).astype(int)
+    out_w = max(1, int(max_xy[0] - min_xy[0]))
+    out_h = max(1, int(max_xy[1] - min_xy[1]))
+    translation = np.array([[1.0, 0.0, -min_xy[0]], [0.0, 1.0, -min_xy[1]], [0.0, 0.0, 1.0]])
+
+    reference_canvas = np.full((out_h, out_w, 3), 255, dtype=reference_bgr.dtype)
+    x = int(-min_xy[0])
+    y = int(-min_xy[1])
+    reference_canvas[y : y + ref_h, x : x + ref_w] = reference_bgr
+    aligned = cv2.warpPerspective(
+        candidate_bgr,
+        translation @ matrix,
+        (out_w, out_h),
+        flags=cv2.INTER_LINEAR,
+        borderValue=(255, 255, 255),
+    )
+    return reference_canvas, aligned
 
 
 def _clip_anchor_region(region: dict, reference_shape: tuple[int, int]) -> dict | None:

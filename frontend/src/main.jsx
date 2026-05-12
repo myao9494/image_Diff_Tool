@@ -392,6 +392,7 @@ function MemoDiffApp() {
   const [payload, setPayload] = useState(null);
   const [loadingPayload, setLoadingPayload] = useState(true);
   const [slider, setSlider] = useState(50);
+  const [memoZoom, setMemoZoom] = useState(100);
   const [notes, setNotes] = useState([]);
   const [selectedNoteId, setSelectedNoteId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
@@ -399,6 +400,7 @@ function MemoDiffApp() {
   const stageRef = useRef(null);
   const dragRef = useRef(null);
   const sliderDragRef = useRef(false);
+  const safeNotes = normalizeMemoNotes(notes);
 
   useEffect(() => {
     let cancelled = false;
@@ -421,15 +423,27 @@ function MemoDiffApp() {
   }, []);
 
   useEffect(() => {
+    function handleShortcut(event) {
+      if (event.key.toLowerCase() !== "t" || isTypingTarget(event.target)) return;
+      event.preventDefault();
+      addNote();
+    }
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
+
+  useEffect(() => {
     function moveNote(event) {
       if (sliderDragRef.current) {
         updateSliderFromPointer(event);
       }
       if (!dragRef.current || !stageRef.current) return;
+      const draggedNoteId = dragRef.current.id;
+      const { offsetX, offsetY } = dragRef.current;
       const rect = stageRef.current.getBoundingClientRect();
-      const x = clamp(((event.clientX - rect.left - dragRef.current.offsetX) / rect.width) * 100, 0, 88);
-      const y = clamp(((event.clientY - rect.top - dragRef.current.offsetY) / rect.height) * 100, 0, 82);
-      setNotes((items) => items.map((item) => (item.id === dragRef.current.id ? { ...item, x, y } : item)));
+      const x = clamp(((event.clientX - rect.left - offsetX) / rect.width) * 100, 0, 88);
+      const y = clamp(((event.clientY - rect.top - offsetY) / rect.height) * 100, 0, 82);
+      setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === draggedNoteId ? { ...item, x, y } : item)));
     }
     function stopDrag() {
       dragRef.current = null;
@@ -460,21 +474,21 @@ function MemoDiffApp() {
   function addNote() {
     const id = crypto.randomUUID?.() ?? String(Date.now());
     const next = { id, text: "めも", x: 42, y: 12 };
-    setNotes((items) => [...items, next]);
+    setNotes((items) => [...normalizeMemoNotes(items), next]);
     setSelectedNoteId(id);
   }
 
   function updateNote(id, text) {
-    setNotes((items) => items.map((item) => (item.id === id ? { ...item, text } : item)));
+    setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === id ? { ...item, text } : item)));
   }
 
   function deleteNote(id) {
-    setNotes((items) => items.filter((item) => item.id !== id));
+    setNotes((items) => normalizeMemoNotes(items).filter((item) => item.id !== id));
     setSelectedNoteId((current) => (current === id ? null : current));
   }
 
   function startDrag(event, note) {
-    if (event.target.tagName === "TEXTAREA" || event.target.tagName === "BUTTON") return;
+    if (event.target.tagName === "BUTTON") return;
     const rect = event.currentTarget.getBoundingClientRect();
     dragRef.current = { id: note.id, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
     setSelectedNoteId(note.id);
@@ -496,7 +510,7 @@ function MemoDiffApp() {
 
   async function copyMemoImage(side) {
     try {
-      await copyImageWithNotes(side === "a" ? imageA : imageB, notes);
+      await copyImageWithNotes(side === "a" ? imageA : imageB, safeNotes, getMemoStageSize());
       setContextMenu(null);
       setNotice(`画像${side.toUpperCase()}をメモ付きでクリップボードに保存しました`);
       window.setTimeout(() => setNotice(""), 2400);
@@ -504,6 +518,12 @@ function MemoDiffApp() {
       setContextMenu(null);
       setNotice(err.message);
     }
+  }
+
+  function getMemoStageSize() {
+    if (!stageRef.current) return null;
+    const rect = stageRef.current.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
   }
 
   return (
@@ -527,11 +547,15 @@ function MemoDiffApp() {
           <span>A / B {slider}%</span>
           <input type="range" min="0" max="100" value={slider} onChange={(event) => setSlider(Number(event.target.value))} />
         </label>
+        <label className="control slider-control">
+          <span>表示サイズ {memoZoom}%</span>
+          <input type="range" min="50" max="150" value={memoZoom} onChange={(event) => setMemoZoom(Number(event.target.value))} />
+        </label>
         {notice && <span className="copy-notice">{notice}</span>}
       </section>
 
       <section className="memo-stage-wrap">
-        <div className="memo-stage" ref={stageRef} onPointerDown={startSliderDrag}>
+        <div className="memo-stage" ref={stageRef} style={{ width: `min(${memoZoom}%, 1280px)` }} onPointerDown={startSliderDrag}>
           <img className="memo-image memo-image-a" src={imageA} alt="画像A" draggable="false" />
           <div className="memo-image-b-clip" style={{ clipPath: `inset(0 0 0 ${slider}%)` }}>
             <img className="memo-image" src={imageB} alt="画像B" draggable="false" />
@@ -540,7 +564,7 @@ function MemoDiffApp() {
             <span>A</span>
             <span>B</span>
           </div>
-          {notes.map((note) => (
+          {safeNotes.map((note) => (
             <div
               key={note.id}
               className={`memo-note ${selectedNoteId === note.id ? "selected" : ""}`}
@@ -835,7 +859,23 @@ function memoPayloadIdFromHash() {
   return id ? decodeURIComponent(id) : null;
 }
 
-async function copyImageWithNotes(imageSrc, notes) {
+function isTypingTarget(target) {
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName) || target?.isContentEditable;
+}
+
+function normalizeMemoNotes(notes) {
+  if (!Array.isArray(notes)) return [];
+  return notes
+    .filter((note) => note && typeof note === "object")
+    .map((note, index) => ({
+      id: note.id ? String(note.id) : `recovered-${Date.now()}-${index}`,
+      text: typeof note.text === "string" ? note.text : "めも",
+      x: Number.isFinite(Number(note.x)) ? clamp(Number(note.x), 0, 88) : 42,
+      y: Number.isFinite(Number(note.y)) ? clamp(Number(note.y), 0, 82) : 12,
+    }));
+}
+
+async function copyImageWithNotes(imageSrc, notes, stageSize = null) {
   if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
     throw new Error("このブラウザでは画像のクリップボード保存に対応していません");
   }
@@ -845,16 +885,16 @@ async function copyImageWithNotes(imageSrc, notes) {
   canvas.height = image.naturalHeight;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
-  drawNotes(ctx, notes, canvas.width, canvas.height);
+  drawNotes(ctx, notes, canvas.width, canvas.height, stageSize);
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("メモ付き画像を作成できませんでした");
   await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
 }
 
-function drawNotes(ctx, notes, width, height) {
+function drawNotes(ctx, notes, width, height, stageSize = null) {
   notes.forEach((note) => {
     const text = note.text.trim() || "めも";
-    const scale = Math.max(1, Math.min(width, height) / 900);
+    const scale = stageSize?.width ? width / stageSize.width : Math.max(1, Math.min(width, height) / 900);
     const x = (note.x / 100) * width;
     const y = (note.y / 100) * height;
     ctx.save();
@@ -862,14 +902,19 @@ function drawNotes(ctx, notes, width, height) {
     const labelWidth = 180 * scale;
     const lines = wrapCanvasText(ctx, text, labelWidth - 28 * scale);
     const labelHeight = Math.max(52 * scale, (lines.length * 28 + 24) * scale);
+    const leaderStartX = x + 18 * scale;
+    const leaderStartY = y + 46 * scale;
+    const leaderAngle = (128 * Math.PI) / 180;
+    const leaderLength = 148 * scale;
     ctx.fillStyle = "#ff1d14";
-    roundedRect(ctx, x, y, labelWidth, labelHeight, 10 * scale);
-    ctx.fill();
+    ctx.strokeStyle = "#ff1d14";
+    ctx.lineWidth = 6 * scale;
+    ctx.lineCap = "butt";
     ctx.beginPath();
-    ctx.moveTo(x + labelWidth * 0.46, y + labelHeight - 2 * scale);
-    ctx.lineTo(x - 92 * scale, y + 205 * scale);
-    ctx.lineTo(x + labelWidth * 0.68, y + labelHeight - 2 * scale);
-    ctx.closePath();
+    ctx.moveTo(leaderStartX, leaderStartY);
+    ctx.lineTo(leaderStartX + Math.cos(leaderAngle) * leaderLength, leaderStartY + Math.sin(leaderAngle) * leaderLength);
+    ctx.stroke();
+    roundedRect(ctx, x, y, labelWidth, labelHeight, 10 * scale);
     ctx.fill();
     ctx.fillStyle = "#ffffff";
     ctx.textAlign = "center";

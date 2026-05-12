@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .attachments import RETENTION_DAYS, cleanup_expired_attachments, save_attachment
 from .alignment import align_to_reference
-from .diffing import build_visual_diff
+from .diffing import build_visual_diff, resize_to_match
 from .image_io import ConversionError, cv_to_pil, decode_png, encode_png, pil_to_cv
 from .models import AlignmentInfo, AnalyzeResponse, DiffResponse, ImagePayload, PageInfo, RediffRequest, RediffResponse
 from .raster_cache import rasterize_upload_cached
@@ -110,16 +110,19 @@ async def diff(
     image_a = pil_to_cv(raster_a.image)
     image_b = pil_to_cv(raster_b.image)
     alignment = align_to_reference(image_a, image_b, category=category, anchor_region=_parse_anchor_region(anchor_region))
-    diff_result = build_visual_diff(image_a, alignment.image, threshold=diff_threshold)
-    result_id = store_diff_images(image_a, alignment.image)
+    comparison_a = alignment.reference_image if alignment.reference_image is not None else image_a
+    comparison_a = resize_to_match(alignment.image, comparison_a)
+    comparison_b = resize_to_match(comparison_a, alignment.image)
+    diff_result = build_visual_diff(comparison_a, comparison_b, threshold=diff_threshold)
+    result_id = store_diff_images(comparison_a, comparison_b)
 
     return DiffResponse(
         result_id=result_id,
         page_a=raster_a.index,
         page_b=raster_b.index,
         category=category,
-        width=raster_a.image.width,
-        height=raster_a.image.height,
+        width=comparison_a.shape[1],
+        height=comparison_a.shape[0],
         alignment=AlignmentInfo(
             success=alignment.success,
             method=alignment.method,
@@ -128,8 +131,8 @@ async def diff(
             inliers=alignment.inliers,
             matrix=alignment.matrix,
         ),
-        image_a=ImagePayload(data=encode_png(raster_a.image)),
-        image_b_aligned=ImagePayload(data=encode_png(cv_to_pil(alignment.image))),
+        image_a=ImagePayload(data=encode_png(cv_to_pil(comparison_a))),
+        image_b_aligned=ImagePayload(data=encode_png(cv_to_pil(comparison_b))),
         overlay=ImagePayload(data=encode_png(cv_to_pil(diff_result["overlay"]))),
         mask=ImagePayload(data=encode_png(cv_to_pil(diff_result["mask"]))),
         diff_rects=diff_result["rects"],

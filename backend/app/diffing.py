@@ -5,18 +5,18 @@ import numpy as np
 
 
 def resize_to_match(reference_bgr: np.ndarray, candidate_bgr: np.ndarray) -> np.ndarray:
-    h, w = reference_bgr.shape[:2]
+    h = max(reference_bgr.shape[0], candidate_bgr.shape[0])
+    w = max(reference_bgr.shape[1], candidate_bgr.shape[1])
     if candidate_bgr.shape[:2] == (h, w):
         return candidate_bgr
     canvas = np.full((h, w, 3), 255, dtype=candidate_bgr.dtype)
     src_h, src_w = candidate_bgr.shape[:2]
-    copy_h = min(h, src_h)
-    copy_w = min(w, src_w)
-    canvas[:copy_h, :copy_w] = candidate_bgr[:copy_h, :copy_w]
+    canvas[:src_h, :src_w] = candidate_bgr
     return canvas
 
 
 def build_visual_diff(reference_bgr: np.ndarray, aligned_bgr: np.ndarray, threshold: float = 0.1) -> dict:
+    reference_bgr = resize_to_match(aligned_bgr, reference_bgr)
     aligned_bgr = resize_to_match(reference_bgr, aligned_bgr)
     threshold = float(np.clip(threshold, 0.0, 1.0))
     delta = _yiq_delta(reference_bgr, aligned_bgr)
