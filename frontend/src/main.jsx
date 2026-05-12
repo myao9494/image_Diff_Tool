@@ -1,9 +1,16 @@
+/**
+ * 画像差分ツールのメインUIコンポーネント
+ *
+ * ユーザーが2つの画像（またはPDF/TIFF等）を選択し、
+ * バックエンドのAPIに送信して差分比較を行うための機能を提供する。
+ * 比較結果は「補正B」「差分」「マスク」の各ビューで切り替えて表示できる。
+ */
 import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AlertTriangle, ImageUp, Layers, Loader2, ScanSearch, ZoomIn, ZoomOut } from "lucide-react";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000/api";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002/api";
 const CATEGORIES = ["汎用", "図面", "グラフ", "書類"];
 const VIEWS = [
   { id: "aligned", label: "補正B" },
@@ -77,15 +84,15 @@ function App() {
           <h1>Visual Diff Tool</h1>
           <p>PNG / SVG / PDF / TIFF / Excalidraw</p>
         </div>
-        <button className="primary" disabled={!canCompare || busy} onClick={compare}>
-          {busy ? <Loader2 className="spin" size={18} /> : <ScanSearch size={18} />}
-          比較
-        </button>
       </header>
 
       <section className="toolbar" aria-label="compare settings">
         <FilePicker label="A" data={left} page={pageA} setPage={setPageA} onFile={(file) => loadFile("left", file)} />
         <FilePicker label="B" data={right} page={pageB} setPage={setPageB} onFile={(file) => loadFile("right", file)} />
+        <button className="primary" disabled={!canCompare || busy} onClick={compare}>
+          {busy ? <Loader2 className="spin" size={18} /> : <ScanSearch size={18} />}
+          比較
+        </button>
         <div className="control">
           <span>カテゴリ</span>
           <div className="segmented">
