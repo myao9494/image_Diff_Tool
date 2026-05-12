@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002/api";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 const CATEGORIES = ["汎用", "図面", "グラフ", "書類"];
 const VIEWS = [
   { id: "aligned", label: "補正B" },

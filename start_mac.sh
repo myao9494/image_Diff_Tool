@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-PORT="${PORT:-8002}"
+PORT="${PORT:-8078}"
 PIDS="$(lsof -ti tcp:"$PORT" || true)"
 if [ -n "$PIDS" ]; then
   echo "Stopping existing server on port $PORT: $PIDS"
