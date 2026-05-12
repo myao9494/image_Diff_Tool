@@ -5,7 +5,7 @@
  * バックエンドのAPIに送信して差分比較を行うための機能を提供する。
  * 比較結果は「補正B」「差分」「マスク」の各ビューで切り替えて表示できる。
  */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AlertTriangle, Clipboard, ImageUp, Layers, Loader2, ScanSearch, ZoomIn, ZoomOut } from "lucide-react";
 import "./styles.css";
@@ -31,6 +31,8 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [activeSide, setActiveSide] = useState("left");
+  const requestIdRef = useRef(0);
+  const previewRequestIdRef = useRef({ left: 0, right: 0 });
 
   const canCompare = Boolean(left?.file && right?.file);
   const rightImage = useMemo(() => {
@@ -39,6 +41,15 @@ function App() {
     if (view === "mask") return toDataUri(result.mask);
     return toDataUri(result.overlay);
   }, [result, view]);
+  const leftPreviewImage = left?.preview ? toDataUri(left.preview) : null;
+  const rightPreviewImage = right?.preview ? toDataUri(right.preview) : null;
+  const rightPaneTitle = result
+    ? view === "overlay"
+      ? "差分オーバーレイ"
+      : view === "mask"
+        ? "差分マスク"
+        : "B 補正済み"
+    : "B 比較対象";
 
   async function loadFile(side, file, attachment = null) {
     setError("");
@@ -57,8 +68,42 @@ function App() {
         setPageB(0);
         setActiveSide("left");
       }
+      await loadPreview(side, file, 0);
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  async function loadPreview(side, file, page) {
+    const nextId = previewRequestIdRef.current[side] + 1;
+    previewRequestIdRef.current = { ...previewRequestIdRef.current, [side]: nextId };
+    const form = new FormData();
+    form.append("file", file);
+    form.append("page", String(page));
+    try {
+      const converted = await postForm("/convert", form);
+      if (previewRequestIdRef.current[side] !== nextId) return;
+      const applyPreview = (current) => (current?.file === file ? { ...current, preview: converted.image } : current);
+      if (side === "left") {
+        setLeft(applyPreview);
+      } else {
+        setRight(applyPreview);
+      }
+    } catch (err) {
+      if (previewRequestIdRef.current[side] === nextId) {
+        setError(err.message);
+      }
+    }
+  }
+
+  function selectPage(side, nextPage) {
+    setResult(null);
+    if (side === "left") {
+      setPageA(nextPage);
+      if (left?.file) loadPreview("left", left.file, nextPage);
+    } else {
+      setPageB(nextPage);
+      if (right?.file) loadPreview("right", right.file, nextPage);
     }
   }
 
@@ -81,8 +126,18 @@ function App() {
     }
   }
 
-  async function compare() {
+  useEffect(() => {
+    if (!result || !canCompare) return undefined;
+    const timer = window.setTimeout(() => {
+      compare(diffThreshold);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [diffThreshold]);
+
+  async function compare(threshold = diffThreshold) {
     if (!canCompare) return;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     setBusy(true);
     setError("");
     try {
@@ -92,12 +147,19 @@ function App() {
       form.append("page_a", String(pageA));
       form.append("page_b", String(pageB));
       form.append("category", category);
-      form.append("diff_threshold", String(diffThreshold));
-      setResult(await postForm("/diff", form));
+      form.append("diff_threshold", String(threshold));
+      const nextResult = await postForm("/diff", form);
+      if (requestId === requestIdRef.current) {
+        setResult(nextResult);
+      }
     } catch (err) {
-      setError(err.message);
+      if (requestId === requestIdRef.current) {
+        setError(err.message);
+      }
     } finally {
-      setBusy(false);
+      if (requestId === requestIdRef.current) {
+        setBusy(false);
+      }
     }
   }
 
@@ -117,7 +179,7 @@ function App() {
           active={activeSide === "left"}
           data={left}
           page={pageA}
-          setPage={setPageA}
+          setPage={(page) => selectPage("left", page)}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
           onFile={(file) => loadFile("left", file)}
@@ -128,7 +190,7 @@ function App() {
           active={activeSide === "right"}
           data={right}
           page={pageB}
-          setPage={setPageB}
+          setPage={(page) => selectPage("right", page)}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
           onFile={(file) => loadFile("right", file)}
@@ -207,17 +269,17 @@ function App() {
           side="left"
           active={activeSide === "left"}
           subtitle={left?.file?.name}
-          image={result ? toDataUri(result.image_a) : null}
+          image={result ? toDataUri(result.image_a) : leftPreviewImage}
           zoom={zoom}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
         />
         <ImagePane
-          title={view === "overlay" ? "差分オーバーレイ" : view === "mask" ? "差分マスク" : "B 補正済み"}
+          title={rightPaneTitle}
           side="right"
           active={activeSide === "right"}
           subtitle={right?.file?.name}
-          image={rightImage}
+          image={result ? rightImage : rightPreviewImage}
           zoom={zoom}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
