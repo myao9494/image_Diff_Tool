@@ -9,13 +9,18 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
   Clipboard,
+  FolderGit2,
+  FolderOpen,
   ImageUp,
   Layers,
   Loader2,
   MessageSquarePlus,
   MousePointer2,
   PanelTopOpen,
+  RefreshCw,
   ScanSearch,
   X,
   ZoomIn,
@@ -35,6 +40,7 @@ const MEMO_DB_STORE = "payloads";
 const MEMO_STORAGE_KEY = "visual-diff-memo-fallback";
 
 function App() {
+  const [activeTab, setActiveTab] = useState("files");
   const [left, setLeft] = useState(null);
   const [right, setRight] = useState(null);
   const [pageA, setPageA] = useState(0);
@@ -48,19 +54,29 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [activeSide, setActiveSide] = useState("left");
+  const [gitFolder, setGitFolder] = useState("");
+  const [gitInfo, setGitInfo] = useState(null);
+  const [gitIndex, setGitIndex] = useState(0);
+  const [gitResult, setGitResult] = useState(null);
+  const [gitBusy, setGitBusy] = useState(false);
+  const [gitError, setGitError] = useState("");
   const requestIdRef = useRef(0);
+  const gitRequestIdRef = useRef(0);
   const previewRequestIdRef = useRef({ left: 0, right: 0 });
 
   const canCompare = Boolean(left?.file && right?.file);
+  const comparableGitFiles = useMemo(() => (gitInfo?.files ?? []).filter((file) => file.comparable), [gitInfo]);
+  const currentGitFile = comparableGitFiles[gitIndex] ?? null;
+  const activeResult = activeTab === "git" ? gitResult : result;
   const rightImage = useMemo(() => {
-    if (!result) return null;
-    if (view === "aligned") return toDataUri(result.image_b_aligned);
-    if (view === "mask") return toDataUri(result.mask);
-    return toDataUri(result.overlay);
-  }, [result, view]);
+    if (!activeResult) return null;
+    if (view === "aligned") return toDataUri(activeResult.image_b_aligned);
+    if (view === "mask") return toDataUri(activeResult.mask);
+    return toDataUri(activeResult.overlay);
+  }, [activeResult, view]);
   const leftPreviewImage = left?.preview ? toDataUri(left.preview) : null;
   const rightPreviewImage = right?.preview ? toDataUri(right.preview) : null;
-  const rightPaneTitle = result
+  const rightPaneTitle = activeResult
     ? view === "overlay"
       ? "差分オーバーレイ"
       : view === "mask"
@@ -153,16 +169,34 @@ function App() {
   }
 
   useEffect(() => {
-    if (!result || !canCompare || result.diff_threshold === diffThreshold) return undefined;
+    if (activeTab === "files" && (!result || !canCompare || result.diff_threshold === diffThreshold)) return undefined;
+    if (activeTab === "git" && (!gitResult || gitResult.diff_threshold === diffThreshold)) return undefined;
     const timer = window.setTimeout(() => {
-      rethreshold(diffThreshold);
+      rethreshold(diffThreshold, activeTab);
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [diffThreshold, result, canCompare]);
+  }, [diffThreshold, result, gitResult, canCompare, activeTab]);
+
+  useEffect(() => {
+    function handleGitKeys(event) {
+      if (activeTab !== "git" || isTypingTarget(event.target)) return;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        selectGitIndex(gitIndex - 1);
+      }
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        selectGitIndex(gitIndex + 1);
+      }
+    }
+    window.addEventListener("keydown", handleGitKeys);
+    return () => window.removeEventListener("keydown", handleGitKeys);
+  }, [activeTab, gitIndex, comparableGitFiles]);
 
   function selectCategory(nextCategory) {
     setCategory(nextCategory);
     invalidateComparison();
+    setGitResult(null);
   }
 
   function selectAnchorRegion(region) {
@@ -207,40 +241,56 @@ function App() {
     }
   }
 
-  async function rethreshold(threshold) {
-    if (!result) return;
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-    setBusy(true);
-    setError("");
+  async function rethreshold(threshold, target = "files") {
+    const sourceResult = target === "git" ? gitResult : result;
+    if (!sourceResult) return;
+    const requestId = target === "git" ? gitRequestIdRef.current + 1 : requestIdRef.current + 1;
+    if (target === "git") {
+      gitRequestIdRef.current = requestId;
+      setGitBusy(true);
+      setGitError("");
+    } else {
+      requestIdRef.current = requestId;
+      setBusy(true);
+      setError("");
+    }
     try {
-      const payload = result.result_id
-        ? { result_id: result.result_id, diff_threshold: threshold }
+      const payload = sourceResult.result_id
+        ? { result_id: sourceResult.result_id, diff_threshold: threshold }
         : {
-            image_a: result.image_a,
-            image_b_aligned: result.image_b_aligned,
+            image_a: sourceResult.image_a,
+            image_b_aligned: sourceResult.image_b_aligned,
             diff_threshold: threshold,
           };
       let nextDiff;
       try {
         nextDiff = await postJson("/rediff", payload);
       } catch (err) {
-        if (err.status !== 404 || !result.image_a || !result.image_b_aligned) throw err;
+        if (err.status !== 404 || !sourceResult.image_a || !sourceResult.image_b_aligned) throw err;
         nextDiff = await postJson("/rediff", {
-          image_a: result.image_a,
-          image_b_aligned: result.image_b_aligned,
+          image_a: sourceResult.image_a,
+          image_b_aligned: sourceResult.image_b_aligned,
           diff_threshold: threshold,
         });
       }
-      if (requestId === requestIdRef.current) {
+      if (target === "git" && requestId === gitRequestIdRef.current) {
+        setGitResult((current) => (current ? { ...current, ...nextDiff } : current));
+      }
+      if (target === "files" && requestId === requestIdRef.current) {
         setResult((current) => (current ? { ...current, ...nextDiff } : current));
       }
     } catch (err) {
-      if (requestId === requestIdRef.current) {
+      if (target === "git" && requestId === gitRequestIdRef.current) {
+        setGitError(err.message);
+      }
+      if (target === "files" && requestId === requestIdRef.current) {
         setError(err.message);
       }
     } finally {
-      if (requestId === requestIdRef.current) {
+      if (target === "git" && requestId === gitRequestIdRef.current) {
+        setGitBusy(false);
+      }
+      if (target === "files" && requestId === requestIdRef.current) {
         setBusy(false);
       }
     }
@@ -255,37 +305,66 @@ function App() {
         </div>
       </header>
 
+      <nav className="mode-tabs" aria-label="diff mode">
+        <button className={activeTab === "files" ? "active" : ""} onClick={() => setActiveTab("files")}>
+          <ImageUp size={18} />
+          ファイル差分
+        </button>
+        <button className={activeTab === "git" ? "active" : ""} onClick={() => setActiveTab("git")}>
+          <FolderGit2 size={18} />
+          git差分
+        </button>
+      </nav>
+
       <section className="toolbar" aria-label="compare settings">
-        <FilePicker
-          label="A"
-          side="left"
-          active={activeSide === "left"}
-          data={left}
-          page={pageA}
-          setPage={(page) => selectPage("left", page)}
-          onActivate={setActiveSide}
-          onPasteImage={pasteImage}
-          onFile={(file) => loadFile("left", file)}
-        />
-        <FilePicker
-          label="B"
-          side="right"
-          active={activeSide === "right"}
-          data={right}
-          page={pageB}
-          setPage={(page) => selectPage("right", page)}
-          onActivate={setActiveSide}
-          onPasteImage={pasteImage}
-          onFile={(file) => loadFile("right", file)}
-        />
-        <button className="primary" disabled={!canCompare || busy} onClick={() => compare()}>
-          {busy ? <Loader2 className="spin" size={18} /> : <ScanSearch size={18} />}
-          比較
-        </button>
-        <button className="primary secondary" disabled={!result} onClick={() => openDiffMemoTab(result, left, right, setError)}>
-          <PanelTopOpen size={18} />
-          差分メモ
-        </button>
+        {activeTab === "files" ? (
+          <>
+            <FilePicker
+              label="A"
+              side="left"
+              active={activeSide === "left"}
+              data={left}
+              page={pageA}
+              setPage={(page) => selectPage("left", page)}
+              onActivate={setActiveSide}
+              onPasteImage={pasteImage}
+              onFile={(file) => loadFile("left", file)}
+            />
+            <FilePicker
+              label="B"
+              side="right"
+              active={activeSide === "right"}
+              data={right}
+              page={pageB}
+              setPage={(page) => selectPage("right", page)}
+              onActivate={setActiveSide}
+              onPasteImage={pasteImage}
+              onFile={(file) => loadFile("right", file)}
+            />
+            <button className="primary" disabled={!canCompare || busy} onClick={() => compare()}>
+              {busy ? <Loader2 className="spin" size={18} /> : <ScanSearch size={18} />}
+              比較
+            </button>
+            <button className="primary secondary" disabled={!result} onClick={() => openDiffMemoTab(result, left, right, setError)}>
+              <PanelTopOpen size={18} />
+              差分メモ
+            </button>
+          </>
+        ) : (
+          <GitToolbar
+            folder={gitFolder}
+            setFolder={setGitFolder}
+            info={gitInfo}
+            files={comparableGitFiles}
+            currentFile={currentGitFile}
+            index={gitIndex}
+            busy={gitBusy}
+            onLoad={loadGitImages}
+            onPrevious={() => selectGitIndex(gitIndex - 1)}
+            onNext={() => selectGitIndex(gitIndex + 1)}
+            onSelect={(index) => selectGitIndex(index)}
+          />
+        )}
         <div className="control">
           <span>カテゴリ</span>
           <div className="segmented">
@@ -335,37 +414,37 @@ function App() {
         </div>
       </section>
 
-      {error && (
+      {(activeTab === "git" ? gitError : error) && (
         <div className="notice error">
           <AlertTriangle size={18} />
-          {error}
+          {activeTab === "git" ? gitError : error}
         </div>
       )}
 
-      {result?.alignment?.warning && (
+      {activeResult?.alignment?.warning && (
         <div className="notice warning">
           <AlertTriangle size={18} />
-          位置合わせ失敗、未補正で表示中: {result.alignment.warning}
+          位置合わせ失敗、未補正で表示中: {activeResult.alignment.warning}
         </div>
       )}
 
       <section className="summary">
-        <Stat label="差分ピクセル" value={result ? result.diff_pixels.toLocaleString() : "-"} />
-        <Stat label="差分率" value={result ? `${(result.diff_ratio * 100).toFixed(3)}%` : "-"} />
-        <Stat label="しきい値" value={result ? result.diff_threshold.toFixed(2) : diffThreshold.toFixed(2)} />
-        <Stat label="マッチ数" value={result ? `${result.alignment.matches} / ${result.alignment.inliers}` : "-"} />
-        <Stat label="矩形" value={result ? result.diff_rects.length : "-"} />
+        <Stat label="差分ピクセル" value={activeResult ? activeResult.diff_pixels.toLocaleString() : "-"} />
+        <Stat label="差分率" value={activeResult ? `${(activeResult.diff_ratio * 100).toFixed(3)}%` : "-"} />
+        <Stat label="しきい値" value={activeResult ? activeResult.diff_threshold.toFixed(2) : diffThreshold.toFixed(2)} />
+        <Stat label="マッチ数" value={activeResult ? `${activeResult.alignment.matches} / ${activeResult.alignment.inliers}` : "-"} />
+        <Stat label="矩形" value={activeResult ? activeResult.diff_rects.length : "-"} />
       </section>
 
       <section className="viewer">
         <ImagePane
-          title="A 基準"
+          title={activeTab === "git" ? "HEAD 1つ前" : "A 基準"}
           side="left"
           active={activeSide === "left"}
-          subtitle={left?.file?.name}
-          image={result ? toDataUri(result.image_a) : leftPreviewImage}
+          subtitle={activeTab === "git" ? currentGitFile?.path : left?.file?.name}
+          image={activeResult ? toDataUri(activeResult.image_a) : activeTab === "git" ? null : leftPreviewImage}
           zoom={zoom}
-          regions={left?.regions ?? []}
+          regions={activeTab === "git" ? [] : left?.regions ?? []}
           selectedRegion={anchorRegion}
           onSelectRegion={selectAnchorRegion}
           onActivate={setActiveSide}
@@ -375,8 +454,8 @@ function App() {
           title={rightPaneTitle}
           side="right"
           active={activeSide === "right"}
-          subtitle={right?.file?.name}
-          image={result ? rightImage : rightPreviewImage}
+          subtitle={activeTab === "git" ? currentGitFile?.path : right?.file?.name}
+          image={activeResult ? rightImage : activeTab === "git" ? null : rightPreviewImage}
           zoom={zoom}
           regions={[]}
           selectedRegion={null}
@@ -385,6 +464,122 @@ function App() {
         />
       </section>
     </main>
+  );
+
+  async function loadGitImages() {
+    const requestId = gitRequestIdRef.current + 1;
+    gitRequestIdRef.current = requestId;
+    setGitBusy(true);
+    setGitError("");
+    setGitResult(null);
+    try {
+      const info = await postJson("/git/images", { folder: gitFolder });
+      if (requestId !== gitRequestIdRef.current) return;
+      setGitInfo(info);
+      const nextFiles = (info.files ?? []).filter((file) => file.comparable);
+      setGitIndex(0);
+      if (nextFiles[0]) {
+        await compareGitFile(nextFiles[0], requestId);
+      }
+    } catch (err) {
+      if (requestId === gitRequestIdRef.current) setGitError(err.message);
+    } finally {
+      if (requestId === gitRequestIdRef.current) setGitBusy(false);
+    }
+  }
+
+  async function selectGitIndex(nextIndex) {
+    if (!comparableGitFiles.length) return;
+    const wrappedIndex = (nextIndex + comparableGitFiles.length) % comparableGitFiles.length;
+    setGitIndex(wrappedIndex);
+    const requestId = gitRequestIdRef.current + 1;
+    gitRequestIdRef.current = requestId;
+    setGitBusy(true);
+    setGitError("");
+    setGitResult(null);
+    try {
+      await compareGitFile(comparableGitFiles[wrappedIndex], requestId);
+    } catch (err) {
+      if (requestId === gitRequestIdRef.current) setGitError(err.message);
+    } finally {
+      if (requestId === gitRequestIdRef.current) setGitBusy(false);
+    }
+  }
+
+  async function compareGitFile(file, requestId = gitRequestIdRef.current) {
+    const nextResult = await postJson("/git/diff", {
+      folder: gitFolder,
+      path: file.path,
+      category,
+      diff_threshold: diffThreshold,
+    });
+    if (requestId === gitRequestIdRef.current) {
+      setGitResult(nextResult);
+    }
+  }
+}
+
+function GitToolbar({
+  folder,
+  setFolder,
+  info,
+  files,
+  currentFile,
+  index,
+  busy,
+  onLoad,
+  onPrevious,
+  onNext,
+  onSelect,
+}) {
+  const skipped = (info?.files ?? []).filter((file) => !file.comparable).length;
+  return (
+    <>
+      <label className="git-folder">
+        <span>フォルダ</span>
+        <input
+          type="text"
+          value={folder}
+          placeholder="/path/to/git/repo/or/subfolder"
+          onChange={(event) => setFolder(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onLoad();
+          }}
+        />
+      </label>
+      <button className="primary" disabled={!folder || busy} onClick={onLoad}>
+        {busy ? <Loader2 className="spin" size={18} /> : <FolderOpen size={18} />}
+        読み込み
+      </button>
+      <div className="git-nav">
+        <button title="前の画像" disabled={!files.length || busy} onClick={onPrevious}>
+          <ChevronLeft size={18} />
+        </button>
+        <select value={files.length ? index : ""} disabled={!files.length || busy} onChange={(event) => onSelect(Number(event.target.value))}>
+          {files.length ? (
+            files.map((file, fileIndex) => (
+              <option key={file.path} value={fileIndex}>
+                {fileIndex + 1}. {file.path}
+              </option>
+            ))
+          ) : (
+            <option value="">変更画像なし</option>
+          )}
+        </select>
+        <button title="次の画像" disabled={!files.length || busy} onClick={onNext}>
+          <ChevronRight size={18} />
+        </button>
+        <button title="再読み込み" disabled={!folder || busy} onClick={onLoad}>
+          <RefreshCw size={18} />
+        </button>
+      </div>
+      <div className="git-meta">
+        <strong>{currentFile?.path ?? "未選択"}</strong>
+        <small>
+          {info ? `${files.length}件を比較可能${skipped ? ` / ${skipped}件はHEAD側なし` : ""}` : "git管理フォルダを指定"}
+        </small>
+      </div>
+    </>
   );
 }
 
