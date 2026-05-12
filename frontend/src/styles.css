@@ -74,6 +74,11 @@ p {
   font-weight: 700;
 }
 
+.primary.secondary {
+  background: #1e293b;
+  border-color: #64748b;
+}
+
 .primary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -373,6 +378,228 @@ select {
   animation: spin 0.9s linear infinite;
 }
 
+.memo-page {
+  min-height: 100vh;
+  background: #111827;
+}
+
+.memo-header {
+  min-height: 72px;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #374151;
+  background: #171717;
+}
+
+.memo-header h1,
+.memo-empty h1 {
+  margin: 0;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.memo-toolbar {
+  min-height: 58px;
+  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  border-bottom: 1px solid #374151;
+  background: #111827;
+}
+
+.slider-control {
+  min-width: 280px;
+}
+
+.slider-control input {
+  width: 280px;
+  accent-color: #f97316;
+}
+
+.copy-notice {
+  color: #bbf7d0;
+  font-size: 13px;
+}
+
+.memo-stage-wrap {
+  height: calc(100vh - 130px);
+  overflow: auto;
+  padding: 24px;
+  display: grid;
+  place-items: start center;
+}
+
+.memo-stage {
+  position: relative;
+  width: min(100%, 1280px);
+  min-height: 420px;
+  background: #0a0a0a;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.memo-image,
+.memo-image-b-clip {
+  display: block;
+  width: 100%;
+}
+
+.memo-image {
+  height: auto;
+  pointer-events: none;
+}
+
+.memo-image-b-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.memo-image-a {
+  opacity: 1;
+}
+
+.comparison-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #f8fafc;
+  box-shadow: 0 0 0 1px #111827, 0 0 18px rgba(248, 250, 252, 0.5);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.comparison-handle span {
+  position: absolute;
+  top: 12px;
+  min-width: 28px;
+  height: 24px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #111827;
+  border: 1px solid #f8fafc;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.comparison-handle span:first-child {
+  right: 8px;
+}
+
+.comparison-handle span:last-child {
+  left: 8px;
+}
+
+.memo-note {
+  position: absolute;
+  width: 180px;
+  min-height: 56px;
+  padding: 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+.memo-note::before {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: 46px;
+  width: 148px;
+  height: 6px;
+  background: #ff1d14;
+  transform: rotate(128deg);
+  transform-origin: left center;
+  z-index: 0;
+}
+
+.memo-note textarea {
+  position: relative;
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: #ff1d14;
+  color: #ffffff;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: center;
+  outline: none;
+  z-index: 1;
+}
+
+.memo-note.selected textarea {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(255, 29, 20, 0.32);
+}
+
+.memo-note button {
+  position: absolute;
+  right: -10px;
+  top: -10px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #991b1b;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #450a0a;
+  color: #fecaca;
+  cursor: pointer;
+  z-index: 3;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 280px;
+  padding: 6px;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  background: #1f2937;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.context-menu button {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  background: transparent;
+  color: #e5e7eb;
+  cursor: pointer;
+  text-align: left;
+}
+
+.context-menu button:hover {
+  background: #374151;
+}
+
+.memo-empty {
+  width: min(560px, calc(100vw - 32px));
+  margin: 20vh auto 0;
+  padding: 24px;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  background: #171717;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -389,9 +616,23 @@ select {
   .app-header,
   .toolbar,
   .summary,
-  .viewer {
+  .viewer,
+  .memo-header,
+  .memo-toolbar,
+  .memo-stage-wrap {
     padding-left: 12px;
     padding-right: 12px;
+  }
+
+  .memo-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .slider-control,
+  .slider-control input {
+    width: 100%;
+    min-width: 0;
   }
 
   .file-picker {

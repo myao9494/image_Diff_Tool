@@ -39,11 +39,14 @@ def align_to_reference(
     params = CATEGORY_PARAMS.get(category, CATEGORY_PARAMS["汎用"])
     fixed = _prepare_gray(reference_bgr, category)
     moving = _prepare_gray(candidate_bgr, category)
+    detector_scale = _detector_scale(reference_bgr.shape[:2], candidate_bgr.shape[:2])
+    fixed_for_features = _resize_for_registration(fixed, detector_scale)
+    moving_for_features = _resize_for_registration(moving, detector_scale)
 
     attempts = []
     for detector_name, detector, norm, ratio_scale in _detector_candidates(params["features"]):
-        kp_a, des_a = detector.detectAndCompute(fixed, None)
-        kp_b, des_b = detector.detectAndCompute(moving, None)
+        kp_a, des_a = detector.detectAndCompute(fixed_for_features, None)
+        kp_b, des_b = detector.detectAndCompute(moving_for_features, None)
         if des_a is None or des_b is None or len(kp_a) < 4 or len(kp_b) < 4:
             continue
 
@@ -57,6 +60,7 @@ def align_to_reference(
         for transform_name, matrix, mask in _estimate_transforms(src, dst, params["ransac"]):
             if matrix is None or mask is None:
                 continue
+            matrix = _scale_matrix_to_full_size(matrix, detector_scale)
 
             inliers = int(mask.ravel().sum())
             if inliers < max(6, params["min_matches"] // 2):
@@ -103,13 +107,25 @@ def _align_with_anchor_region(
     params = CATEGORY_PARAMS.get(category, CATEGORY_PARAMS["汎用"])
     fixed = _prepare_gray(reference_bgr, category)
     moving = _prepare_gray(candidate_bgr, category)
-    mask = np.zeros(fixed.shape[:2], dtype=np.uint8)
-    mask[region["y"] : region["y"] + region["height"], region["x"] : region["x"] + region["width"]] = 255
+    detector_scale = _detector_scale(reference_bgr.shape[:2], candidate_bgr.shape[:2])
+    fixed_for_features = _resize_for_registration(fixed, detector_scale)
+    moving_for_features = _resize_for_registration(moving, detector_scale)
+    mask = np.zeros(fixed_for_features.shape[:2], dtype=np.uint8)
+    scaled_region = {
+        "x": int(round(region["x"] * detector_scale)),
+        "y": int(round(region["y"] * detector_scale)),
+        "width": max(1, int(round(region["width"] * detector_scale))),
+        "height": max(1, int(round(region["height"] * detector_scale))),
+    }
+    mask[
+        scaled_region["y"] : scaled_region["y"] + scaled_region["height"],
+        scaled_region["x"] : scaled_region["x"] + scaled_region["width"],
+    ] = 255
 
     attempts = []
     for detector_name, detector, norm, ratio_scale in _detector_candidates(params["features"]):
-        kp_a, des_a = detector.detectAndCompute(fixed, mask)
-        kp_b, des_b = detector.detectAndCompute(moving, None)
+        kp_a, des_a = detector.detectAndCompute(fixed_for_features, mask)
+        kp_b, des_b = detector.detectAndCompute(moving_for_features, None)
         if des_a is None or des_b is None or len(kp_a) < 4 or len(kp_b) < 4:
             continue
 
@@ -122,6 +138,7 @@ def _align_with_anchor_region(
         for transform_name, matrix, result_mask in _estimate_transforms(src, dst, params["ransac"]):
             if matrix is None or result_mask is None:
                 continue
+            matrix = _scale_matrix_to_full_size(matrix, detector_scale)
 
             inliers = int(result_mask.ravel().sum())
             if inliers < max(5, params["min_matches"] // 3):
@@ -305,6 +322,18 @@ def _resize_for_registration(image: np.ndarray, scale: float) -> np.ndarray:
     h, w = image.shape[:2]
     resized = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
     return resized
+
+
+def _detector_scale(reference_shape: tuple[int, int], candidate_shape: tuple[int, int]) -> float:
+    max_side = max(reference_shape[0], reference_shape[1], candidate_shape[0], candidate_shape[1])
+    return min(1.0, 1600.0 / max(1, max_side))
+
+
+def _scale_matrix_to_full_size(matrix: np.ndarray, scale: float) -> np.ndarray:
+    if scale >= 1.0:
+        return matrix
+    scale_matrix = np.array([[scale, 0, 0], [0, scale, 0], [0, 0, 1]], dtype=np.float64)
+    return np.linalg.inv(scale_matrix) @ matrix @ scale_matrix
 
 
 def _prepare_gray(image: np.ndarray, category: str) -> np.ndarray:

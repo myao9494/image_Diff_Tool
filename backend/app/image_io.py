@@ -136,23 +136,23 @@ def _rasterize_excalidraw(content: bytes, markdown: bool) -> Image.Image:
     payload = _extract_excalidraw_json(content) if markdown else json.loads(content.decode("utf-8"))
     elements = [el for el in payload.get("elements", []) if not el.get("isDeleted")]
     app_state = payload.get("appState", {})
-    canvas = Image.new("RGBA", DEFAULT_CANVAS, WHITE)
-    draw = ImageDraw.Draw(canvas)
-
-    for element in elements:
-        _draw_excalidraw_element(draw, element)
-
     bounds = _element_bounds(elements)
     if bounds:
         x0, y0, x1, y1 = bounds
         pad = 80
-        crop = (
-            max(0, int(x0 - pad)),
-            max(0, int(y0 - pad)),
-            min(canvas.width, int(x1 + pad)),
-            min(canvas.height, int(y1 + pad)),
-        )
-        canvas = canvas.crop(crop)
+        width = max(1, int(np.ceil(x1 - x0 + pad * 2)))
+        height = max(1, int(np.ceil(y1 - y0 + pad * 2)))
+        offset_x = pad - x0
+        offset_y = pad - y0
+        canvas = Image.new("RGBA", (width, height), WHITE)
+        drawable_elements = [_translated_element(element, offset_x, offset_y) for element in elements]
+    else:
+        canvas = Image.new("RGBA", DEFAULT_CANVAS, WHITE)
+        drawable_elements = elements
+    draw = ImageDraw.Draw(canvas)
+
+    for element in drawable_elements:
+        _draw_excalidraw_element(draw, element)
 
     bg = app_state.get("viewBackgroundColor") or "#ffffff"
     if bg != "#ffffff":
@@ -202,6 +202,13 @@ def _draw_excalidraw_element(draw: ImageDraw.ImageDraw, element: dict) -> None:
     elif kind == "text":
         text = element.get("text") or ""
         draw.multiline_text((x, y), text, fill=line_color, spacing=4)
+
+
+def _translated_element(element: dict, offset_x: float, offset_y: float) -> dict:
+    translated = dict(element)
+    translated["x"] = float(element.get("x", 0)) + offset_x
+    translated["y"] = float(element.get("y", 0)) + offset_y
+    return translated
 
 
 def _element_bounds(elements: list[dict]) -> tuple[float, float, float, float] | None:

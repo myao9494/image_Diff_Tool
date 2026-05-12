@@ -13,7 +13,9 @@ import {
   ImageUp,
   Layers,
   Loader2,
+  MessageSquarePlus,
   MousePointer2,
+  PanelTopOpen,
   ScanSearch,
   X,
   ZoomIn,
@@ -28,6 +30,9 @@ const VIEWS = [
   { id: "overlay", label: "差分" },
   { id: "mask", label: "マスク" },
 ];
+const MEMO_DB_NAME = "visual-diff-memo";
+const MEMO_DB_STORE = "payloads";
+const MEMO_STORAGE_KEY = "visual-diff-memo-fallback";
 
 function App() {
   const [left, setLeft] = useState(null);
@@ -277,6 +282,10 @@ function App() {
           {busy ? <Loader2 className="spin" size={18} /> : <ScanSearch size={18} />}
           比較
         </button>
+        <button className="primary secondary" disabled={!result} onClick={() => openDiffMemoTab(result, left, right, setError)}>
+          <PanelTopOpen size={18} />
+          差分メモ
+        </button>
         <div className="control">
           <span>カテゴリ</span>
           <div className="segmented">
@@ -375,6 +384,189 @@ function App() {
           onPasteImage={pasteImage}
         />
       </section>
+    </main>
+  );
+}
+
+function MemoDiffApp() {
+  const [payload, setPayload] = useState(null);
+  const [loadingPayload, setLoadingPayload] = useState(true);
+  const [slider, setSlider] = useState(50);
+  const [notes, setNotes] = useState([]);
+  const [selectedNoteId, setSelectedNoteId] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [notice, setNotice] = useState("");
+  const stageRef = useRef(null);
+  const dragRef = useRef(null);
+  const sliderDragRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    readMemoPayload(memoPayloadIdFromHash()).then((nextPayload) => {
+      if (cancelled) return;
+      setPayload(nextPayload);
+      setLoadingPayload(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    function closeMenu() {
+      setContextMenu(null);
+    }
+    window.addEventListener("click", closeMenu);
+    return () => window.removeEventListener("click", closeMenu);
+  }, []);
+
+  useEffect(() => {
+    function moveNote(event) {
+      if (sliderDragRef.current) {
+        updateSliderFromPointer(event);
+      }
+      if (!dragRef.current || !stageRef.current) return;
+      const rect = stageRef.current.getBoundingClientRect();
+      const x = clamp(((event.clientX - rect.left - dragRef.current.offsetX) / rect.width) * 100, 0, 88);
+      const y = clamp(((event.clientY - rect.top - dragRef.current.offsetY) / rect.height) * 100, 0, 82);
+      setNotes((items) => items.map((item) => (item.id === dragRef.current.id ? { ...item, x, y } : item)));
+    }
+    function stopDrag() {
+      dragRef.current = null;
+      sliderDragRef.current = false;
+    }
+    window.addEventListener("pointermove", moveNote);
+    window.addEventListener("pointerup", stopDrag);
+    return () => {
+      window.removeEventListener("pointermove", moveNote);
+      window.removeEventListener("pointerup", stopDrag);
+    };
+  }, []);
+
+  if (loadingPayload || !payload) {
+    return (
+      <main className="memo-page">
+        <div className="memo-empty">
+          <h1>差分メモ</h1>
+          <p>{loadingPayload ? "比較結果を読み込んでいます。" : "比較結果が見つかりません。元の画面で比較してから「差分メモ」を開いてください。"}</p>
+        </div>
+      </main>
+    );
+  }
+
+  const imageA = toDataUri(payload.imageA);
+  const imageB = toDataUri(payload.imageB);
+
+  function addNote() {
+    const id = crypto.randomUUID?.() ?? String(Date.now());
+    const next = { id, text: "めも", x: 42, y: 12 };
+    setNotes((items) => [...items, next]);
+    setSelectedNoteId(id);
+  }
+
+  function updateNote(id, text) {
+    setNotes((items) => items.map((item) => (item.id === id ? { ...item, text } : item)));
+  }
+
+  function deleteNote(id) {
+    setNotes((items) => items.filter((item) => item.id !== id));
+    setSelectedNoteId((current) => (current === id ? null : current));
+  }
+
+  function startDrag(event, note) {
+    if (event.target.tagName === "TEXTAREA" || event.target.tagName === "BUTTON") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    dragRef.current = { id: note.id, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
+    setSelectedNoteId(note.id);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function startSliderDrag(event) {
+    if (event.target.closest(".memo-note")) return;
+    sliderDragRef.current = true;
+    updateSliderFromPointer(event);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function updateSliderFromPointer(event) {
+    if (!stageRef.current) return;
+    const rect = stageRef.current.getBoundingClientRect();
+    setSlider(Math.round(clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100)));
+  }
+
+  async function copyMemoImage(side) {
+    try {
+      await copyImageWithNotes(side === "a" ? imageA : imageB, notes);
+      setContextMenu(null);
+      setNotice(`画像${side.toUpperCase()}をメモ付きでクリップボードに保存しました`);
+      window.setTimeout(() => setNotice(""), 2400);
+    } catch (err) {
+      setContextMenu(null);
+      setNotice(err.message);
+    }
+  }
+
+  return (
+    <main className="memo-page" onContextMenu={(event) => {
+      event.preventDefault();
+      setContextMenu({ x: event.clientX, y: event.clientY });
+    }}>
+      <header className="memo-header">
+        <div>
+          <h1>差分メモ</h1>
+          <p>{payload.nameA ?? "画像A"} / {payload.nameB ?? "画像B"}</p>
+        </div>
+        <button className="primary" onClick={addNote}>
+          <MessageSquarePlus size={18} />
+          メモ追加
+        </button>
+      </header>
+
+      <section className="memo-toolbar">
+        <label className="control slider-control">
+          <span>A / B {slider}%</span>
+          <input type="range" min="0" max="100" value={slider} onChange={(event) => setSlider(Number(event.target.value))} />
+        </label>
+        {notice && <span className="copy-notice">{notice}</span>}
+      </section>
+
+      <section className="memo-stage-wrap">
+        <div className="memo-stage" ref={stageRef} onPointerDown={startSliderDrag}>
+          <img className="memo-image memo-image-a" src={imageA} alt="画像A" draggable="false" />
+          <div className="memo-image-b-clip" style={{ clipPath: `inset(0 0 0 ${slider}%)` }}>
+            <img className="memo-image" src={imageB} alt="画像B" draggable="false" />
+          </div>
+          <div className="comparison-handle" style={{ left: `${slider}%` }}>
+            <span>A</span>
+            <span>B</span>
+          </div>
+          {notes.map((note) => (
+            <div
+              key={note.id}
+              className={`memo-note ${selectedNoteId === note.id ? "selected" : ""}`}
+              style={{ left: `${note.x}%`, top: `${note.y}%` }}
+              onPointerDown={(event) => startDrag(event, note)}
+            >
+              <textarea
+                value={note.text}
+                aria-label="メモ本文"
+                onFocus={() => setSelectedNoteId(note.id)}
+                onChange={(event) => updateNote(note.id, event.target.value)}
+              />
+              <button title="メモ削除" onClick={() => deleteNote(note.id)}>
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {contextMenu && (
+        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+          <button onClick={() => copyMemoImage("a")}>画像Aをメモ付きでクリップボードに保存</button>
+          <button onClick={() => copyMemoImage("b")}>画像Bをメモ付きでクリップボードに保存</button>
+        </div>
+      )}
     </main>
   );
 }
@@ -574,4 +766,170 @@ function isSameRegion(a, b) {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+async function openDiffMemoTab(result, left, right, onError) {
+  const payload = {
+    imageA: result.image_a,
+    imageB: result.image_b_aligned,
+    nameA: left?.file?.name,
+    nameB: right?.file?.name,
+  };
+  const id = crypto.randomUUID?.() ?? String(Date.now());
+  try {
+    await storeMemoPayload(id, payload);
+    window.open(`${window.location.origin}${window.location.pathname}#diff-memo/${id}`, "_blank", "noopener,noreferrer");
+  } catch (err) {
+    onError?.(`差分メモを開けませんでした: ${err.message}`);
+  }
+}
+
+async function storeMemoPayload(id, payload) {
+  try {
+    const db = await openMemoDb();
+    await idbRequest(db.transaction(MEMO_DB_STORE, "readwrite").objectStore(MEMO_DB_STORE).put({ id, payload, createdAt: Date.now() }));
+  } catch {
+    localStorage.setItem(`${MEMO_STORAGE_KEY}:${id}`, JSON.stringify(payload));
+  }
+}
+
+async function readMemoPayload(id) {
+  if (!id) return null;
+  try {
+    const db = await openMemoDb();
+    const record = await idbRequest(db.transaction(MEMO_DB_STORE, "readonly").objectStore(MEMO_DB_STORE).get(id));
+    if (record?.payload) return record.payload;
+  } catch {
+    // Fall back to localStorage below.
+  }
+  try {
+    const raw = localStorage.getItem(`${MEMO_STORAGE_KEY}:${id}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function openMemoDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error("IndexedDB is not available"));
+      return;
+    }
+    const request = indexedDB.open(MEMO_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(MEMO_DB_STORE, { keyPath: "id" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Could not open memo storage"));
+  });
+}
+
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Memo storage request failed"));
+  });
+}
+
+function memoPayloadIdFromHash() {
+  const [, id] = window.location.hash.match(/^#diff-memo\/(.+)$/) ?? [];
+  return id ? decodeURIComponent(id) : null;
+}
+
+async function copyImageWithNotes(imageSrc, notes) {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    throw new Error("このブラウザでは画像のクリップボード保存に対応していません");
+  }
+  const image = await loadImage(imageSrc);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0);
+  drawNotes(ctx, notes, canvas.width, canvas.height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("メモ付き画像を作成できませんでした");
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+}
+
+function drawNotes(ctx, notes, width, height) {
+  notes.forEach((note) => {
+    const text = note.text.trim() || "めも";
+    const scale = Math.max(1, Math.min(width, height) / 900);
+    const x = (note.x / 100) * width;
+    const y = (note.y / 100) * height;
+    ctx.save();
+    ctx.font = `700 ${24 * scale}px sans-serif`;
+    const labelWidth = 180 * scale;
+    const lines = wrapCanvasText(ctx, text, labelWidth - 28 * scale);
+    const labelHeight = Math.max(52 * scale, (lines.length * 28 + 24) * scale);
+    ctx.fillStyle = "#ff1d14";
+    roundedRect(ctx, x, y, labelWidth, labelHeight, 10 * scale);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + labelWidth * 0.46, y + labelHeight - 2 * scale);
+    ctx.lineTo(x - 92 * scale, y + 205 * scale);
+    ctx.lineTo(x + labelWidth * 0.68, y + labelHeight - 2 * scale);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    lines.forEach((line, index) => {
+      ctx.fillText(line, x + labelWidth / 2, y + 13 * scale + index * 28 * scale, labelWidth - 24 * scale);
+    });
+    ctx.restore();
+  });
+}
+
+function wrapCanvasText(ctx, text, maxWidth) {
+  const lines = [];
+  for (const paragraph of text.split("\n")) {
+    let line = "";
+    for (const char of Array.from(paragraph || " ")) {
+      const candidate = `${line}${char}`;
+      if (line && ctx.measureText(candidate).width > maxWidth) {
+        lines.push(line);
+        line = char;
+      } else {
+        line = candidate;
+      }
+    }
+    lines.push(line.trimEnd());
+  }
+  return lines;
+}
+
+function roundedRect(ctx, x, y, width, height, radius) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + width, y, x + width, y + height, radius);
+  ctx.arcTo(x + width, y + height, x, y + height, radius);
+  ctx.arcTo(x, y + height, x, y, radius);
+  ctx.arcTo(x, y, x + width, y, radius);
+  ctx.closePath();
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("画像を読み込めませんでした"));
+    image.src = src;
+  });
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function Root() {
+  const [route, setRoute] = useState(window.location.hash);
+  useEffect(() => {
+    const onHashChange = () => setRoute(window.location.hash);
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  return route.startsWith("#diff-memo") ? <MemoDiffApp /> : <App />;
+}
+
+createRoot(document.getElementById("root")).render(<Root />);

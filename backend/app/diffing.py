@@ -22,20 +22,25 @@ def build_visual_diff(reference_bgr: np.ndarray, aligned_bgr: np.ndarray, thresh
     delta = _yiq_delta(reference_bgr, aligned_bgr)
     max_delta = 35215.0 * threshold * threshold
     mask = np.where(delta > max_delta, 255, 0).astype(np.uint8)
+    mask = _remove_small_components(mask, min_pixels=3)
     kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.dilate(mask, kernel, iterations=1)
 
     gray_a = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2GRAY)
     gray_b = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2GRAY)
-    removed = cv2.bitwise_and(mask, cv2.inRange(gray_a, 0, 245))
-    added = cv2.bitwise_and(mask, cv2.inRange(gray_b, 0, 245))
+    ink_a = cv2.inRange(gray_a, 0, 245)
+    ink_b = cv2.inRange(gray_b, 0, 245)
+    removed = cv2.bitwise_and(mask, cv2.bitwise_and(ink_a, cv2.bitwise_not(ink_b)))
+    added = cv2.bitwise_and(mask, cv2.bitwise_and(ink_b, cv2.bitwise_not(ink_a)))
+    changed = cv2.bitwise_and(mask, cv2.bitwise_and(ink_a, ink_b))
 
     overlay = reference_bgr.copy()
     red = np.full_like(overlay, (40, 40, 230))
     blue = np.full_like(overlay, (230, 110, 40))
+    amber = np.full_like(overlay, (40, 190, 255))
     overlay = np.where(removed[:, :, None] > 0, cv2.addWeighted(overlay, 0.35, red, 0.65, 0), overlay)
     overlay = np.where(added[:, :, None] > 0, cv2.addWeighted(overlay, 0.35, blue, 0.65, 0), overlay)
+    overlay = np.where(changed[:, :, None] > 0, cv2.addWeighted(overlay, 0.35, amber, 0.65, 0), overlay)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     rects = []
@@ -57,6 +62,17 @@ def build_visual_diff(reference_bgr: np.ndarray, aligned_bgr: np.ndarray, thresh
         "diff_ratio": diff_pixels / total if total else 0.0,
         "threshold": threshold,
     }
+
+
+def _remove_small_components(mask: np.ndarray, min_pixels: int) -> np.ndarray:
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if component_count <= 1:
+        return mask
+    filtered = np.zeros_like(mask)
+    for label in range(1, component_count):
+        if stats[label, cv2.CC_STAT_AREA] >= min_pixels:
+            filtered[labels == label] = 255
+    return filtered
 
 
 def _yiq_delta(image_a_bgr: np.ndarray, image_b_bgr: np.ndarray) -> np.ndarray:

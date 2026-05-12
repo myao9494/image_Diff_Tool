@@ -4,10 +4,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
+import numpy as np
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from backend.app.attachments import ATTACHMENTS_DIR, cleanup_expired_attachments
+from backend.app.diffing import build_visual_diff
 from backend.app.main import app
 
 
@@ -101,6 +103,56 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertIn("overlay", body)
         self.assertIn("image_b_aligned", body)
         self.assertIsInstance(body["diff_rects"], list)
+
+    def test_visual_diff_keeps_thin_line_changes(self):
+        reference = np.full((80, 80, 3), 255, dtype=np.uint8)
+        changed = reference.copy()
+        changed[40, 10:70] = (0, 0, 0)
+
+        diff = build_visual_diff(reference, changed, threshold=0.1)
+
+        self.assertGreater(diff["diff_pixels"], 0)
+        self.assertTrue(any(rect["width"] >= 55 and rect["height"] <= 5 for rect in diff["rects"]))
+
+    def test_visual_diff_distinguishes_added_and_removed_ink(self):
+        reference = np.full((80, 80, 3), 255, dtype=np.uint8)
+        changed = reference.copy()
+        reference[15:35, 15:35] = (0, 0, 0)
+        changed[45:65, 45:65] = (0, 0, 0)
+
+        diff = build_visual_diff(reference, changed, threshold=0.1)
+
+        self.assertGreaterEqual(len(diff["rects"]), 2)
+
+    def test_excalidraw_rasterizes_elements_outside_default_canvas(self):
+        payload = {
+            "type": "excalidraw",
+            "elements": [
+                {
+                    "id": "far-rect",
+                    "type": "rectangle",
+                    "x": 2200,
+                    "y": -500,
+                    "width": 120,
+                    "height": 80,
+                    "strokeColor": "#000000",
+                    "backgroundColor": "transparent",
+                    "strokeWidth": 2,
+                    "isDeleted": False,
+                }
+            ],
+            "appState": {},
+        }
+        response = self.client.post(
+            "/api/analyze",
+            files={"file": ("far.excalidraw", BytesIO(json.dumps(payload).encode("utf-8")), "application/json")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["page_count"], 1)
+        self.assertGreaterEqual(body["pages"][0]["width"], 260)
+        self.assertGreaterEqual(body["pages"][0]["height"], 220)
 
     def test_diff_accepts_anchor_region(self):
         anchor_region = {"x": 0, "y": 0, "width": 800, "height": 600, "label": "全体枠候補"}
