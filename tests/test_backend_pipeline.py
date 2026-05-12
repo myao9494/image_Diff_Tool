@@ -51,6 +51,26 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertIn("image_b_aligned", body)
         self.assertIsInstance(body["diff_rects"], list)
 
+    def test_diff_threshold_controls_sensitivity(self):
+        def request_with_threshold(value):
+            with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as a, open(
+                os.path.join(self.samples_dir, "gear_b.png"), "rb"
+            ) as b:
+                return self.client.post(
+                    "/api/diff",
+                    files={
+                        "file_a": ("gear_a.png", a, "image/png"),
+                        "file_b": ("gear_b.png", b, "image/png"),
+                    },
+                    data={"page_a": "0", "page_b": "0", "category": "図面", "diff_threshold": str(value)},
+                ).json()
+
+        sensitive = request_with_threshold(0.03)
+        tolerant = request_with_threshold(0.4)
+        self.assertEqual(sensitive["diff_threshold"], 0.03)
+        self.assertEqual(tolerant["diff_threshold"], 0.4)
+        self.assertGreaterEqual(sensitive["diff_pixels"], tolerant["diff_pixels"])
+
     def test_bom_alignment_stays_sane(self):
         with open(os.path.join(self.samples_dir, "bom_a.png"), "rb") as a, open(
             os.path.join(self.samples_dir, "bom_b.png"), "rb"

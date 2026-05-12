@@ -7,10 +7,10 @@ import numpy as np
 
 
 CATEGORY_PARAMS = {
-    "汎用": {"features": 5000, "ratio": 0.78, "min_matches": 12},
-    "図面": {"features": 8000, "ratio": 0.82, "min_matches": 14},
-    "グラフ": {"features": 6000, "ratio": 0.80, "min_matches": 12},
-    "書類": {"features": 7000, "ratio": 0.78, "min_matches": 10},
+    "汎用": {"features": 7000, "ratio": 0.74, "min_matches": 12, "ransac": 3.0},
+    "図面": {"features": 10000, "ratio": 0.78, "min_matches": 14, "ransac": 2.5},
+    "グラフ": {"features": 8000, "ratio": 0.76, "min_matches": 12, "ransac": 3.0},
+    "書類": {"features": 9000, "ratio": 0.74, "min_matches": 10, "ransac": 2.5},
 }
 
 
@@ -30,49 +30,119 @@ def align_to_reference(reference_bgr: np.ndarray, candidate_bgr: np.ndarray, cat
     fixed = _prepare_gray(reference_bgr, category)
     moving = _prepare_gray(candidate_bgr, category)
 
-    detector = cv2.ORB_create(nfeatures=params["features"], fastThreshold=7)
-    kp_a, des_a = detector.detectAndCompute(fixed, None)
-    kp_b, des_b = detector.detectAndCompute(moving, None)
-    if des_a is None or des_b is None or len(kp_a) < 4 or len(kp_b) < 4:
-        return _failed(candidate_bgr, "Not enough keypoints for alignment")
-
-    matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-    knn = matcher.knnMatch(des_b, des_a, k=2)
-    good = []
-    for pair in knn:
-        if len(pair) < 2:
+    attempts = []
+    for detector_name, detector, norm, ratio_scale in _detector_candidates(params["features"]):
+        kp_a, des_a = detector.detectAndCompute(fixed, None)
+        kp_b, des_b = detector.detectAndCompute(moving, None)
+        if des_a is None or des_b is None or len(kp_a) < 4 or len(kp_b) < 4:
             continue
-        first, second = pair
-        if first.distance < params["ratio"] * second.distance:
-            good.append(first)
 
-    if len(good) < params["min_matches"]:
-        return _failed(candidate_bgr, f"Not enough stable matches ({len(good)})")
+        good = _match_descriptors(des_b, des_a, norm, params["ratio"] * ratio_scale)
+        if len(good) < params["min_matches"]:
+            continue
 
-    src = np.float32([kp_b[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-    dst = np.float32([kp_a[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-    matrix, mask = cv2.findHomography(src, dst, cv2.RANSAC, 4.0)
-    if matrix is None or mask is None:
-        return _failed(candidate_bgr, "Homography estimation failed", matches=len(good))
+        src = np.float32([kp_b[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst = np.float32([kp_a[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        matrix, mask = _estimate_homography(src, dst, params["ransac"])
+        if matrix is None or mask is None:
+            continue
 
-    inliers = int(mask.ravel().sum())
-    if inliers < max(6, params["min_matches"] // 2):
-        return _failed(candidate_bgr, f"Homography was unstable ({inliers} inliers)", matches=len(good), inliers=inliers)
-    warning = _validate_homography(matrix, reference_bgr.shape[:2], candidate_bgr.shape[:2])
-    if warning:
-        return _failed(candidate_bgr, warning, matches=len(good), inliers=inliers)
+        inliers = int(mask.ravel().sum())
+        if inliers < max(6, params["min_matches"] // 2):
+            continue
+        warning = _validate_homography(matrix, reference_bgr.shape[:2], candidate_bgr.shape[:2])
+        if warning:
+            continue
+        attempts.append((inliers, len(good), detector_name, matrix))
+
+    if not attempts:
+        return _failed(candidate_bgr, "Could not estimate a stable feature transform")
+
+    inliers, matches, detector_name, matrix = max(attempts, key=lambda item: (item[0], item[1]))
+    matrix, refined = _refine_with_ecc(fixed, moving, matrix, reference_bgr.shape[:2])
 
     h, w = reference_bgr.shape[:2]
     aligned = cv2.warpPerspective(candidate_bgr, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
     return AlignmentResult(
         image=aligned,
         success=True,
-        method="ORB + RANSAC homography",
+        method=f"{detector_name} + robust homography" + (" + ECC refine" if refined else ""),
         warning=None,
-        matches=len(good),
+        matches=matches,
         inliers=inliers,
         matrix=matrix.tolist(),
     )
+
+
+def _detector_candidates(features: int):
+    if hasattr(cv2, "SIFT_create"):
+        yield "SIFT", cv2.SIFT_create(nfeatures=features, contrastThreshold=0.025, edgeThreshold=12), cv2.NORM_L2, 1.0
+    yield "AKAZE", cv2.AKAZE_create(threshold=0.0006), cv2.NORM_HAMMING, 1.05
+    yield "ORB", cv2.ORB_create(nfeatures=features, fastThreshold=5, scoreType=cv2.ORB_HARRIS_SCORE), cv2.NORM_HAMMING, 1.08
+
+
+def _match_descriptors(des_moving: np.ndarray, des_fixed: np.ndarray, norm: int, ratio: float):
+    matcher = cv2.BFMatcher(norm)
+    knn = matcher.knnMatch(des_moving, des_fixed, k=2)
+    good = []
+    for pair in knn:
+        if len(pair) < 2:
+            continue
+        first, second = pair
+        if first.distance < ratio * second.distance:
+            good.append(first)
+    return good
+
+
+def _estimate_homography(src: np.ndarray, dst: np.ndarray, ransac_threshold: float):
+    method = getattr(cv2, "USAC_MAGSAC", cv2.RANSAC)
+    try:
+        return cv2.findHomography(src, dst, method, ransac_threshold, maxIters=4000, confidence=0.999)
+    except cv2.error:
+        return cv2.findHomography(src, dst, cv2.RANSAC, ransac_threshold)
+
+
+def _refine_with_ecc(fixed: np.ndarray, moving: np.ndarray, matrix: np.ndarray, reference_shape: tuple[int, int]):
+    ref_h, ref_w = reference_shape
+    scale = min(1.0, 1200.0 / max(ref_h, ref_w))
+    fixed_small = _resize_for_registration(fixed, scale)
+    moving_small = _resize_for_registration(moving, scale)
+    scale_matrix = np.array([[scale, 0, 0], [0, scale, 0], [0, 0, 1]], dtype=np.float32)
+    try:
+        inverse_matrix = np.linalg.inv(matrix)
+    except np.linalg.LinAlgError:
+        return matrix, False
+    warp = (scale_matrix @ inverse_matrix @ np.linalg.inv(scale_matrix)).astype(np.float32)
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 80, 1e-5)
+    try:
+        _, refined = cv2.findTransformECC(
+            fixed_small,
+            moving_small,
+            warp,
+            cv2.MOTION_HOMOGRAPHY,
+            criteria,
+            inputMask=None,
+            gaussFiltSize=3,
+        )
+    except cv2.error:
+        return matrix, False
+
+    try:
+        refined_full = np.linalg.inv(np.linalg.inv(scale_matrix) @ refined @ scale_matrix)
+    except np.linalg.LinAlgError:
+        return matrix, False
+    warning = _validate_homography(refined_full, reference_shape, moving.shape[:2])
+    if warning:
+        return matrix, False
+    return refined_full.astype(np.float64), True
+
+
+def _resize_for_registration(image: np.ndarray, scale: float) -> np.ndarray:
+    if scale >= 1.0:
+        return image
+    h, w = image.shape[:2]
+    resized = cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+    return resized
 
 
 def _prepare_gray(image: np.ndarray, category: str) -> np.ndarray:

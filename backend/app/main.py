@@ -68,6 +68,7 @@ async def diff(
     page_a: int = Form(0),
     page_b: int = Form(0),
     category: str = Form("汎用"),
+    diff_threshold: float = Form(0.1),
 ) -> DiffResponse:
     content_a = await file_a.read()
     content_b = await file_b.read()
@@ -79,7 +80,7 @@ async def diff(
     image_a = pil_to_cv(raster_a.image)
     image_b = resize_to_match(image_a, pil_to_cv(raster_b.image))
     alignment = align_to_reference(image_a, image_b, category=category)
-    diff_result = build_visual_diff(image_a, alignment.image)
+    diff_result = build_visual_diff(image_a, alignment.image, threshold=diff_threshold)
 
     return DiffResponse(
         page_a=raster_a.index,
@@ -102,6 +103,7 @@ async def diff(
         diff_rects=diff_result["rects"],
         diff_pixels=diff_result["diff_pixels"],
         diff_ratio=diff_result["diff_ratio"],
+        diff_threshold=diff_result["threshold"],
     )
 
 

@@ -24,7 +24,7 @@ Both scripts create `.venv` if needed, run `pip install -r requirements.txt`, an
 After startup, open:
 
 ```text
-http://127.0.0.1:8000/
+http://127.0.0.1:8002/
 ```
 
 ## API

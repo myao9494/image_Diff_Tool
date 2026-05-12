@@ -24,6 +24,7 @@ function App() {
   const [pageA, setPageA] = useState(0);
   const [pageB, setPageB] = useState(0);
   const [category, setCategory] = useState("汎用");
+  const [diffThreshold, setDiffThreshold] = useState(0.1);
   const [view, setView] = useState("overlay");
   const [zoom, setZoom] = useState(1);
   const [result, setResult] = useState(null);
@@ -69,6 +70,7 @@ function App() {
       form.append("page_a", String(pageA));
       form.append("page_b", String(pageB));
       form.append("category", category);
+      form.append("diff_threshold", String(diffThreshold));
       setResult(await postForm("/diff", form));
     } catch (err) {
       setError(err.message);
@@ -113,6 +115,17 @@ function App() {
             ))}
           </div>
         </div>
+        <label className="control threshold-control">
+          <span>差分しきい値 {diffThreshold.toFixed(2)}</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={diffThreshold}
+            onChange={(event) => setDiffThreshold(Number(event.target.value))}
+          />
+        </label>
         <div className="icon-group" aria-label="zoom">
           <button title="縮小" onClick={() => setZoom((value) => Math.max(0.25, value - 0.1))}>
             <ZoomOut size={18} />
@@ -141,6 +154,7 @@ function App() {
       <section className="summary">
         <Stat label="差分ピクセル" value={result ? result.diff_pixels.toLocaleString() : "-"} />
         <Stat label="差分率" value={result ? `${(result.diff_ratio * 100).toFixed(3)}%` : "-"} />
+        <Stat label="しきい値" value={result ? result.diff_threshold.toFixed(2) : diffThreshold.toFixed(2)} />
         <Stat label="マッチ数" value={result ? `${result.alignment.matches} / ${result.alignment.inliers}` : "-"} />
         <Stat label="矩形" value={result ? result.diff_rects.length : "-"} />
       </section>

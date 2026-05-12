@@ -52,3 +52,4 @@ class DiffResponse(BaseModel):
     diff_rects: list[DiffRect]
     diff_pixels: int
     diff_ratio: float
+    diff_threshold: float = 0.1

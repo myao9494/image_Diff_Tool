@@ -11,16 +11,18 @@ def resize_to_match(reference_bgr: np.ndarray, candidate_bgr: np.ndarray) -> np.
     return cv2.resize(candidate_bgr, (w, h), interpolation=cv2.INTER_AREA)
 
 
-def build_visual_diff(reference_bgr: np.ndarray, aligned_bgr: np.ndarray, threshold: int = 24) -> dict:
+def build_visual_diff(reference_bgr: np.ndarray, aligned_bgr: np.ndarray, threshold: float = 0.1) -> dict:
     aligned_bgr = resize_to_match(reference_bgr, aligned_bgr)
-    gray_a = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2GRAY)
-    gray_b = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2GRAY)
-    delta = cv2.absdiff(gray_a, gray_b)
-    _, mask = cv2.threshold(delta, threshold, 255, cv2.THRESH_BINARY)
+    threshold = float(np.clip(threshold, 0.0, 1.0))
+    delta = _yiq_delta(reference_bgr, aligned_bgr)
+    max_delta = 35215.0 * threshold * threshold
+    mask = np.where(delta > max_delta, 255, 0).astype(np.uint8)
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.dilate(mask, kernel, iterations=1)
 
+    gray_a = cv2.cvtColor(reference_bgr, cv2.COLOR_BGR2GRAY)
+    gray_b = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2GRAY)
     removed = cv2.bitwise_and(mask, cv2.inRange(gray_a, 0, 245))
     added = cv2.bitwise_and(mask, cv2.inRange(gray_b, 0, 245))
 
@@ -48,4 +50,17 @@ def build_visual_diff(reference_bgr: np.ndarray, aligned_bgr: np.ndarray, thresh
         "rects": sorted(rects, key=lambda item: item["area"], reverse=True),
         "diff_pixels": diff_pixels,
         "diff_ratio": diff_pixels / total if total else 0.0,
+        "threshold": threshold,
     }
+
+
+def _yiq_delta(image_a_bgr: np.ndarray, image_b_bgr: np.ndarray) -> np.ndarray:
+    a = image_a_bgr.astype(np.float32)
+    b = image_b_bgr.astype(np.float32)
+    b1, g1, r1 = cv2.split(a)
+    b2, g2, r2 = cv2.split(b)
+
+    y = (r1 - r2) * 0.29889531 + (g1 - g2) * 0.58662247 + (b1 - b2) * 0.11448223
+    i = (r1 - r2) * 0.59597799 - (g1 - g2) * 0.27417610 - (b1 - b2) * 0.32180189
+    q = (r1 - r2) * 0.21147017 - (g1 - g2) * 0.52261711 + (b1 - b2) * 0.31114694
+    return 0.5053 * y * y + 0.299 * i * i + 0.1957 * q * q
