@@ -32,6 +32,10 @@ def encode_png(image: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def decode_png(data: str) -> Image.Image:
+    return normalize_page_image(Image.open(io.BytesIO(base64.b64decode(data))))
+
+
 def pil_to_cv(image: Image.Image) -> np.ndarray:
     rgb = image.convert("RGB")
     return np.array(rgb)[:, :, ::-1].copy()

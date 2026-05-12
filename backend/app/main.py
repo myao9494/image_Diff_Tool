@@ -10,8 +10,10 @@ from fastapi.staticfiles import StaticFiles
 from .attachments import RETENTION_DAYS, cleanup_expired_attachments, save_attachment
 from .alignment import align_to_reference
 from .diffing import build_visual_diff
-from .image_io import ConversionError, cv_to_pil, encode_png, pil_to_cv, rasterize_upload
-from .models import AlignmentInfo, AnalyzeResponse, DiffResponse, ImagePayload, PageInfo
+from .image_io import ConversionError, cv_to_pil, decode_png, encode_png, pil_to_cv
+from .models import AlignmentInfo, AnalyzeResponse, DiffResponse, ImagePayload, PageInfo, RediffRequest, RediffResponse
+from .raster_cache import rasterize_upload_cached
+from .result_cache import get_diff_images, store_diff_images
 
 
 app = FastAPI(title="Visual Diff Tool API", version="0.1.0")
@@ -100,8 +102,10 @@ async def diff(
     image_b = pil_to_cv(raster_b.image)
     alignment = align_to_reference(image_a, image_b, category=category)
     diff_result = build_visual_diff(image_a, alignment.image, threshold=diff_threshold)
+    result_id = store_diff_images(image_a, alignment.image)
 
     return DiffResponse(
+        result_id=result_id,
         page_a=raster_a.index,
         page_b=raster_b.index,
         category=category,
@@ -126,9 +130,46 @@ async def diff(
     )
 
 
+@app.post("/api/rediff", response_model=RediffResponse)
+async def rediff(payload: RediffRequest) -> RediffResponse:
+    result_id = payload.result_id
+    if payload.result_id:
+        cached = get_diff_images(payload.result_id)
+        if cached:
+            image_a = cached.image_a
+            image_b_aligned = cached.image_b_aligned
+        elif payload.image_a is None or payload.image_b_aligned is None:
+            raise HTTPException(status_code=404, detail="Diff result cache expired")
+        else:
+            image_a, image_b_aligned = _decode_rediff_images(payload)
+            result_id = store_diff_images(image_a, image_b_aligned)
+    else:
+        image_a, image_b_aligned = _decode_rediff_images(payload)
+        result_id = store_diff_images(image_a, image_b_aligned)
+    diff_result = build_visual_diff(image_a, image_b_aligned, threshold=payload.diff_threshold)
+    return RediffResponse(
+        result_id=result_id,
+        overlay=ImagePayload(data=encode_png(cv_to_pil(diff_result["overlay"]))),
+        mask=ImagePayload(data=encode_png(cv_to_pil(diff_result["mask"]))),
+        diff_rects=diff_result["rects"],
+        diff_pixels=diff_result["diff_pixels"],
+        diff_ratio=diff_result["diff_ratio"],
+        diff_threshold=diff_result["threshold"],
+    )
+
+
+def _decode_rediff_images(payload: RediffRequest):
+    if payload.image_a is None or payload.image_b_aligned is None:
+        raise HTTPException(status_code=422, detail="result_id or both diff images are required")
+    try:
+        return pil_to_cv(decode_png(payload.image_a.data)), pil_to_cv(decode_png(payload.image_b_aligned.data))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not read diff images: {exc}") from exc
+
+
 def _convert_or_400(filename: str, content: bytes):
     try:
-        return rasterize_upload(filename, content)
+        return rasterize_upload_cached(filename, content)
     except ConversionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:

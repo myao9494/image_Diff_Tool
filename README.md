@@ -4,6 +4,15 @@ PNG, SVG, PDF, TIFF, Excalidraw files can be compared in a local web UI. The bac
 
 The first implementation focuses on the web app and local Backend API. VSCode extension integration is planned but not included yet.
 
+## Current Capabilities
+
+- Upload or paste two inputs and preview the selected page before comparing.
+- Compare PNG, SVG, PDF, TIFF, Excalidraw JSON, and Obsidian Excalidraw Markdown.
+- Select pages independently for multi-page PDF/TIFF inputs.
+- Align image B to image A with staged OpenCV feature matching and ECC refinement.
+- Switch between aligned B, diff overlay, and mask views.
+- Adjust the diff threshold after comparison without rerunning alignment.
+
 ## Run
 
 Install Python 3.12 or a compatible Python 3 version first.
@@ -33,6 +42,16 @@ http://127.0.0.1:8002/
 - `POST /api/analyze`
 - `POST /api/convert`
 - `POST /api/diff`
+- `POST /api/rediff`
+
+`/api/diff` returns a short-lived `result_id` in addition to the encoded result images. The UI uses that ID with `/api/rediff` when only the diff threshold changes, so threshold tuning reuses the aligned images instead of converting and aligning the files again.
+
+## Performance Notes
+
+- Upload rasterization is cached by file content, extension, and DPI. This avoids repeating the same conversion across analyze, preview, and compare calls.
+- Diff result images are cached behind `result_id` for quick threshold recalculation.
+- Both caches have item and memory limits, so large documents may be evicted and recalculated when needed.
+- Feature matching stops early when a detector produces a high-confidence transform; harder cases still fall through to the remaining detectors.
 
 ## Frontend Distribution
 

@@ -51,9 +51,15 @@ function App() {
         : "B 補正済み"
     : "B 比較対象";
 
+  function invalidateComparison() {
+    requestIdRef.current += 1;
+    setResult(null);
+    setBusy(false);
+  }
+
   async function loadFile(side, file, attachment = null) {
     setError("");
-    setResult(null);
+    invalidateComparison();
     const form = new FormData();
     form.append("file", file);
     try {
@@ -97,7 +103,7 @@ function App() {
   }
 
   function selectPage(side, nextPage) {
-    setResult(null);
+    invalidateComparison();
     if (side === "left") {
       setPageA(nextPage);
       if (left?.file) loadPreview("left", left.file, nextPage);
@@ -127,12 +133,17 @@ function App() {
   }
 
   useEffect(() => {
-    if (!result || !canCompare) return undefined;
+    if (!result || !canCompare || result.diff_threshold === diffThreshold) return undefined;
     const timer = window.setTimeout(() => {
-      compare(diffThreshold);
+      rethreshold(diffThreshold);
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [diffThreshold]);
+  }, [diffThreshold, result, canCompare]);
+
+  function selectCategory(nextCategory) {
+    setCategory(nextCategory);
+    invalidateComparison();
+  }
 
   async function compare(threshold = diffThreshold) {
     if (!canCompare) return;
@@ -151,6 +162,45 @@ function App() {
       const nextResult = await postForm("/diff", form);
       if (requestId === requestIdRef.current) {
         setResult(nextResult);
+      }
+    } catch (err) {
+      if (requestId === requestIdRef.current) {
+        setError(err.message);
+      }
+    } finally {
+      if (requestId === requestIdRef.current) {
+        setBusy(false);
+      }
+    }
+  }
+
+  async function rethreshold(threshold) {
+    if (!result) return;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    setBusy(true);
+    setError("");
+    try {
+      const payload = result.result_id
+        ? { result_id: result.result_id, diff_threshold: threshold }
+        : {
+            image_a: result.image_a,
+            image_b_aligned: result.image_b_aligned,
+            diff_threshold: threshold,
+          };
+      let nextDiff;
+      try {
+        nextDiff = await postJson("/rediff", payload);
+      } catch (err) {
+        if (err.status !== 404 || !result.image_a || !result.image_b_aligned) throw err;
+        nextDiff = await postJson("/rediff", {
+          image_a: result.image_a,
+          image_b_aligned: result.image_b_aligned,
+          diff_threshold: threshold,
+        });
+      }
+      if (requestId === requestIdRef.current) {
+        setResult((current) => (current ? { ...current, ...nextDiff } : current));
       }
     } catch (err) {
       if (requestId === requestIdRef.current) {
@@ -203,7 +253,7 @@ function App() {
           <span>カテゴリ</span>
           <div className="segmented">
             {CATEGORIES.map((item) => (
-              <button key={item} className={category === item ? "active" : ""} onClick={() => setCategory(item)}>
+              <button key={item} className={category === item ? "active" : ""} onClick={() => selectCategory(item)}>
                 {item}
               </button>
             ))}
@@ -376,9 +426,28 @@ async function postForm(path, form) {
   const response = await fetch(`${API_BASE}${path}`, { method: "POST", body: form });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.detail || `API error: ${response.status}`);
+    throw apiError(body.detail || `API error: ${response.status}`, response.status);
   }
   return body;
+}
+
+async function postJson(path, payload) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw apiError(body.detail || `API error: ${response.status}`, response.status);
+  }
+  return body;
+}
+
+function apiError(message, status) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
 }
 
 function toDataUri(image) {

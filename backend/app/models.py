@@ -39,6 +39,7 @@ class ImagePayload(BaseModel):
 
 
 class DiffResponse(BaseModel):
+    result_id: str | None = None
     page_a: int
     page_b: int
     category: str
@@ -47,6 +48,23 @@ class DiffResponse(BaseModel):
     alignment: AlignmentInfo
     image_a: ImagePayload
     image_b_aligned: ImagePayload
+    overlay: ImagePayload
+    mask: ImagePayload
+    diff_rects: list[DiffRect]
+    diff_pixels: int
+    diff_ratio: float
+    diff_threshold: float = 0.1
+
+
+class RediffRequest(BaseModel):
+    result_id: str | None = None
+    image_a: ImagePayload | None = None
+    image_b_aligned: ImagePayload | None = None
+    diff_threshold: float = 0.1
+
+
+class RediffResponse(BaseModel):
+    result_id: str | None = None
     overlay: ImagePayload
     mask: ImagePayload
     diff_rects: list[DiffRect]

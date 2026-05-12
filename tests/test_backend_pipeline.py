@@ -115,6 +115,49 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertEqual(tolerant["diff_threshold"], 0.4)
         self.assertGreaterEqual(sensitive["diff_pixels"], tolerant["diff_pixels"])
 
+    def test_rediff_reuses_aligned_images_without_realigning(self):
+        with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as a, open(
+            os.path.join(self.samples_dir, "gear_b.png"), "rb"
+        ) as b:
+            response = self.client.post(
+                "/api/diff",
+                files={
+                    "file_a": ("gear_a.png", a, "image/png"),
+                    "file_b": ("gear_b.png", b, "image/png"),
+                },
+                data={"page_a": "0", "page_b": "0", "category": "図面", "diff_threshold": "0.03"},
+            )
+        self.assertEqual(response.status_code, 200)
+        diff_body = response.json()
+        self.assertTrue(diff_body["result_id"])
+
+        rediff_response = self.client.post(
+            "/api/rediff",
+            json={
+                "result_id": diff_body["result_id"],
+                "diff_threshold": 0.4,
+            },
+        )
+        self.assertEqual(rediff_response.status_code, 200)
+        rediff_body = rediff_response.json()
+        self.assertEqual(rediff_body["diff_threshold"], 0.4)
+        self.assertLessEqual(rediff_body["diff_pixels"], diff_body["diff_pixels"])
+        self.assertIn("overlay", rediff_body)
+        self.assertIn("mask", rediff_body)
+
+        fallback_response = self.client.post(
+            "/api/rediff",
+            json={
+                "result_id": "expired",
+                "image_a": diff_body["image_a"],
+                "image_b_aligned": diff_body["image_b_aligned"],
+                "diff_threshold": 0.4,
+            },
+        )
+        self.assertEqual(fallback_response.status_code, 200)
+        self.assertEqual(fallback_response.json()["diff_pixels"], rediff_body["diff_pixels"])
+        self.assertTrue(fallback_response.json()["result_id"])
+
     def test_bom_alignment_stays_sane(self):
         with open(os.path.join(self.samples_dir, "bom_a.png"), "rb") as a, open(
             os.path.join(self.samples_dir, "bom_b.png"), "rb"

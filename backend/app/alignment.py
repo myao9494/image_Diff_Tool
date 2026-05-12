@@ -41,6 +41,7 @@ def align_to_reference(reference_bgr: np.ndarray, candidate_bgr: np.ndarray, cat
         if len(good) < params["min_matches"]:
             continue
 
+        detector_attempts = []
         src = np.float32([kp_b[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
         dst = np.float32([kp_a[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
         for transform_name, matrix, mask in _estimate_transforms(src, dst, params["ransac"]):
@@ -53,7 +54,12 @@ def align_to_reference(reference_bgr: np.ndarray, candidate_bgr: np.ndarray, cat
             warning = _validate_homography(matrix, reference_bgr.shape[:2], candidate_bgr.shape[:2])
             if warning:
                 continue
-            attempts.append((inliers, len(good), f"{detector_name} {transform_name}", matrix))
+            attempt = (inliers, len(good), f"{detector_name} {transform_name}", matrix)
+            attempts.append(attempt)
+            detector_attempts.append(attempt)
+
+        if _has_confident_detector_result(detector_attempts, params["min_matches"]):
+            break
 
     if not attempts:
         return _failed(candidate_bgr, "Could not estimate a stable feature transform")
@@ -79,6 +85,13 @@ def _detector_candidates(features: int):
         yield "SIFT", cv2.SIFT_create(nfeatures=features, contrastThreshold=0.025, edgeThreshold=12), cv2.NORM_L2, 1.0
     yield "AKAZE", cv2.AKAZE_create(threshold=0.0006), cv2.NORM_HAMMING, 1.05
     yield "ORB", cv2.ORB_create(nfeatures=features, fastThreshold=5, scoreType=cv2.ORB_HARRIS_SCORE), cv2.NORM_HAMMING, 1.08
+
+
+def _has_confident_detector_result(attempts: list[tuple[int, int, str, np.ndarray]], min_matches: int) -> bool:
+    if not attempts:
+        return False
+    inliers, matches, _, _ = max(attempts, key=lambda item: (item[0], item[1]))
+    return inliers >= max(80, min_matches * 6) and inliers / max(1, matches) >= 0.75
 
 
 def _match_descriptors(des_moving: np.ndarray, des_fixed: np.ndarray, norm: int, ratio: float):
