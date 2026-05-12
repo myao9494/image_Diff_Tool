@@ -20,7 +20,7 @@
   - `main.jsx`: UIのメインロジック。
   - `styles.css`: ダークモード対応のスタイリング。
 - **Backend**: Python (FastAPI, OpenCV)
-  - **ポート**: `8002` (ローカルサーバー)
+  - **ポート**: `8078` (ローカルサーバー)
   - `alignment.py`: SIFT / AKAZE / ORB による段階的な特徴量マッチングと ECC 補正。
   - `diffing.py`: YIQベースのピクセル差分、細線を維持するマスク生成、オーバーレイ、矩形抽出。
   - `raster_cache.py`: アップロード内容のハッシュをキーにしたラスター化キャッシュ。
