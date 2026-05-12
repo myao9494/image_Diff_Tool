@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -13,6 +14,7 @@ from .diffing import build_visual_diff
 from .image_io import ConversionError, cv_to_pil, decode_png, encode_png, pil_to_cv
 from .models import AlignmentInfo, AnalyzeResponse, DiffResponse, ImagePayload, PageInfo, RediffRequest, RediffResponse
 from .raster_cache import rasterize_upload_cached
+from .regions import suggest_anchor_regions
 from .result_cache import get_diff_images, store_diff_images
 
 
@@ -78,6 +80,7 @@ async def convert(file: UploadFile = File(...), page: int = Form(0)) -> JSONResp
             "width": selected.image.width,
             "height": selected.image.height,
             "image": {"mime_type": "image/png", "data": encode_png(selected.image)},
+            "regions": suggest_anchor_regions(pil_to_cv(selected.image)),
         }
     )
 
@@ -90,6 +93,7 @@ async def diff(
     page_b: int = Form(0),
     category: str = Form("汎用"),
     diff_threshold: float = Form(0.1),
+    anchor_region: str | None = Form(None),
 ) -> DiffResponse:
     content_a = await file_a.read()
     content_b = await file_b.read()
@@ -100,7 +104,7 @@ async def diff(
 
     image_a = pil_to_cv(raster_a.image)
     image_b = pil_to_cv(raster_b.image)
-    alignment = align_to_reference(image_a, image_b, category=category)
+    alignment = align_to_reference(image_a, image_b, category=category, anchor_region=_parse_anchor_region(anchor_region))
     diff_result = build_visual_diff(image_a, alignment.image, threshold=diff_threshold)
     result_id = store_diff_images(image_a, alignment.image)
 
@@ -180,6 +184,18 @@ def _select_page(pages, index: int):
     if index < 0 or index >= len(pages):
         raise HTTPException(status_code=400, detail=f"Page index {index} is out of range")
     return pages[index]
+
+
+def _parse_anchor_region(anchor_region: str | None) -> dict | None:
+    if not anchor_region:
+        return None
+    try:
+        value = json.loads(anchor_region)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="anchor_region must be JSON") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="anchor_region must be an object")
+    return value
 
 
 if ASSETS_DIR.exists():

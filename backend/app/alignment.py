@@ -25,7 +25,17 @@ class AlignmentResult:
     matrix: list[list[float]] | None
 
 
-def align_to_reference(reference_bgr: np.ndarray, candidate_bgr: np.ndarray, category: str = "汎用") -> AlignmentResult:
+def align_to_reference(
+    reference_bgr: np.ndarray,
+    candidate_bgr: np.ndarray,
+    category: str = "汎用",
+    anchor_region: dict | None = None,
+) -> AlignmentResult:
+    if anchor_region:
+        anchored = _align_with_anchor_region(reference_bgr, candidate_bgr, category, anchor_region)
+        if anchored.success:
+            return anchored
+
     params = CATEGORY_PARAMS.get(category, CATEGORY_PARAMS["汎用"])
     fixed = _prepare_gray(reference_bgr, category)
     moving = _prepare_gray(candidate_bgr, category)
@@ -76,6 +86,125 @@ def align_to_reference(reference_bgr: np.ndarray, candidate_bgr: np.ndarray, cat
         warning=None,
         matches=matches,
         inliers=inliers,
+        matrix=matrix.tolist(),
+    )
+
+
+def _align_with_anchor_region(
+    reference_bgr: np.ndarray,
+    candidate_bgr: np.ndarray,
+    category: str,
+    anchor_region: dict,
+) -> AlignmentResult:
+    region = _clip_anchor_region(anchor_region, reference_bgr.shape[:2])
+    if region is None:
+        return _failed(candidate_bgr, "Selected anchor region is outside the reference image")
+
+    params = CATEGORY_PARAMS.get(category, CATEGORY_PARAMS["汎用"])
+    fixed = _prepare_gray(reference_bgr, category)
+    moving = _prepare_gray(candidate_bgr, category)
+    mask = np.zeros(fixed.shape[:2], dtype=np.uint8)
+    mask[region["y"] : region["y"] + region["height"], region["x"] : region["x"] + region["width"]] = 255
+
+    attempts = []
+    for detector_name, detector, norm, ratio_scale in _detector_candidates(params["features"]):
+        kp_a, des_a = detector.detectAndCompute(fixed, mask)
+        kp_b, des_b = detector.detectAndCompute(moving, None)
+        if des_a is None or des_b is None or len(kp_a) < 4 or len(kp_b) < 4:
+            continue
+
+        good = _match_descriptors(des_b, des_a, norm, params["ratio"] * ratio_scale)
+        if len(good) < max(8, params["min_matches"] // 2):
+            continue
+
+        src = np.float32([kp_b[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst = np.float32([kp_a[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        for transform_name, matrix, result_mask in _estimate_transforms(src, dst, params["ransac"]):
+            if matrix is None or result_mask is None:
+                continue
+
+            inliers = int(result_mask.ravel().sum())
+            if inliers < max(5, params["min_matches"] // 3):
+                continue
+            warning = _validate_homography(matrix, reference_bgr.shape[:2], candidate_bgr.shape[:2])
+            if warning:
+                continue
+            attempts.append((inliers, len(good), f"anchor region {detector_name} {transform_name}", matrix))
+
+    if attempts:
+        inliers, matches, transform_label, matrix = max(attempts, key=lambda item: (item[0], item[1]))
+        matrix, refined = _refine_with_ecc(fixed, moving, matrix, reference_bgr.shape[:2])
+        h, w = reference_bgr.shape[:2]
+        aligned = cv2.warpPerspective(candidate_bgr, matrix, (w, h), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
+        return AlignmentResult(
+            image=aligned,
+            success=True,
+            method=f"{transform_label} + robust transform" + (" + ECC refine" if refined else ""),
+            warning=None,
+            matches=matches,
+            inliers=inliers,
+            matrix=matrix.tolist(),
+        )
+
+    return _template_anchor_fallback(reference_bgr, candidate_bgr, fixed, moving, region)
+
+
+def _template_anchor_fallback(
+    reference_bgr: np.ndarray,
+    candidate_bgr: np.ndarray,
+    fixed: np.ndarray,
+    moving: np.ndarray,
+    region: dict,
+) -> AlignmentResult:
+    x, y, w, h = region["x"], region["y"], region["width"], region["height"]
+    template = fixed[y : y + h, x : x + w]
+    if template.size == 0 or template.shape[0] < 16 or template.shape[1] < 16:
+        return _failed(candidate_bgr, "Selected anchor region is too small for matching")
+
+    max_template_side = 700.0
+    shrink = min(1.0, max_template_side / max(template.shape[:2]))
+    if shrink < 1.0:
+        template = cv2.resize(
+            template,
+            (max(16, int(template.shape[1] * shrink)), max(16, int(template.shape[0] * shrink))),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    moving_edges = cv2.Canny(moving, 60, 160)
+    best: tuple[float, int, int, int, int] | None = None
+    for scale in (0.9, 0.95, 1.0, 1.05, 1.1):
+        scaled_w = int(template.shape[1] * scale)
+        scaled_h = int(template.shape[0] * scale)
+        if scaled_w < 16 or scaled_h < 16 or scaled_w > moving.shape[1] or scaled_h > moving.shape[0]:
+            continue
+        scaled = cv2.resize(template, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
+        scaled_edges = cv2.Canny(scaled, 60, 160)
+        try:
+            result = cv2.matchTemplate(moving_edges, scaled_edges, cv2.TM_CCOEFF_NORMED)
+        except cv2.error:
+            continue
+        _, score, _, location = cv2.minMaxLoc(result)
+        if best is None or score > best[0]:
+            best = (float(score), int(location[0]), int(location[1]), scaled_w, scaled_h)
+
+    if best is None or best[0] < 0.2:
+        return _failed(candidate_bgr, "Could not match the selected anchor region")
+
+    _, match_x, match_y, match_w, match_h = best
+    ref_center_x = x + w / 2.0
+    ref_center_y = y + h / 2.0
+    cand_center_x = match_x + match_w / 2.0
+    cand_center_y = match_y + match_h / 2.0
+    matrix = np.array([[1.0, 0.0, ref_center_x - cand_center_x], [0.0, 1.0, ref_center_y - cand_center_y], [0.0, 0.0, 1.0]])
+    ref_h, ref_w = reference_bgr.shape[:2]
+    aligned = cv2.warpPerspective(candidate_bgr, matrix, (ref_w, ref_h), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
+    return AlignmentResult(
+        image=aligned,
+        success=True,
+        method="anchor region template translation",
+        warning=None,
+        matches=1,
+        inliers=1,
         matrix=matrix.tolist(),
     )
 
@@ -198,6 +327,25 @@ def _failed(image: np.ndarray, warning: str, matches: int = 0, inliers: int = 0)
         inliers=inliers,
         matrix=None,
     )
+
+
+def _clip_anchor_region(region: dict, reference_shape: tuple[int, int]) -> dict | None:
+    ref_h, ref_w = reference_shape
+    try:
+        x = int(round(float(region["x"])))
+        y = int(round(float(region["y"])))
+        width = int(round(float(region["width"])))
+        height = int(round(float(region["height"])))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    x1 = max(0, min(ref_w - 1, x))
+    y1 = max(0, min(ref_h - 1, y))
+    x2 = max(x1 + 1, min(ref_w, x + max(1, width)))
+    y2 = max(y1 + 1, min(ref_h, y + max(1, height)))
+    if x2 - x1 < 16 or y2 - y1 < 16:
+        return None
+    return {"x": x1, "y": y1, "width": x2 - x1, "height": y2 - y1}
 
 
 def _validate_homography(matrix: np.ndarray, reference_shape: tuple[int, int], candidate_shape: tuple[int, int]) -> str | None:

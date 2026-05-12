@@ -7,7 +7,18 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, Clipboard, ImageUp, Layers, Loader2, ScanSearch, ZoomIn, ZoomOut } from "lucide-react";
+import {
+  AlertTriangle,
+  Clipboard,
+  ImageUp,
+  Layers,
+  Loader2,
+  MousePointer2,
+  ScanSearch,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002/api";
@@ -27,6 +38,7 @@ function App() {
   const [diffThreshold, setDiffThreshold] = useState(0.1);
   const [view, setView] = useState("overlay");
   const [zoom, setZoom] = useState(1);
+  const [anchorRegion, setAnchorRegion] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -60,6 +72,7 @@ function App() {
   async function loadFile(side, file, attachment = null) {
     setError("");
     invalidateComparison();
+    if (side === "left") setAnchorRegion(null);
     const form = new FormData();
     form.append("file", file);
     try {
@@ -89,7 +102,8 @@ function App() {
     try {
       const converted = await postForm("/convert", form);
       if (previewRequestIdRef.current[side] !== nextId) return;
-      const applyPreview = (current) => (current?.file === file ? { ...current, preview: converted.image } : current);
+      const applyPreview = (current) =>
+        current?.file === file ? { ...current, preview: converted.image, regions: converted.regions ?? [] } : current;
       if (side === "left") {
         setLeft(applyPreview);
       } else {
@@ -105,6 +119,7 @@ function App() {
   function selectPage(side, nextPage) {
     invalidateComparison();
     if (side === "left") {
+      setAnchorRegion(null);
       setPageA(nextPage);
       if (left?.file) loadPreview("left", left.file, nextPage);
     } else {
@@ -145,6 +160,16 @@ function App() {
     invalidateComparison();
   }
 
+  function selectAnchorRegion(region) {
+    setAnchorRegion(region);
+    invalidateComparison();
+  }
+
+  function clearAnchorRegion() {
+    setAnchorRegion(null);
+    invalidateComparison();
+  }
+
   async function compare(threshold = diffThreshold) {
     if (!canCompare) return;
     const requestId = requestIdRef.current + 1;
@@ -159,6 +184,9 @@ function App() {
       form.append("page_b", String(pageB));
       form.append("category", category);
       form.append("diff_threshold", String(threshold));
+      if (anchorRegion) {
+        form.append("anchor_region", JSON.stringify(anchorRegion));
+      }
       const nextResult = await postForm("/diff", form);
       if (requestId === requestIdRef.current) {
         setResult(nextResult);
@@ -280,6 +308,13 @@ function App() {
             onChange={(event) => setDiffThreshold(Number(event.target.value))}
           />
         </label>
+        <div className="control anchor-control">
+          <span>基準領域</span>
+          <button className={`anchor-status ${anchorRegion ? "selected" : ""}`} disabled={!left?.regions?.length} onClick={clearAnchorRegion}>
+            {anchorRegion ? <X size={16} /> : <MousePointer2 size={16} />}
+            {anchorRegion ? `${anchorRegion.label}を使用` : `${left?.regions?.length ?? 0}候補`}
+          </button>
+        </div>
         <div className="icon-group" aria-label="zoom">
           <button title="縮小" onClick={() => setZoom((value) => Math.max(0.25, value - 0.1))}>
             <ZoomOut size={18} />
@@ -321,6 +356,9 @@ function App() {
           subtitle={left?.file?.name}
           image={result ? toDataUri(result.image_a) : leftPreviewImage}
           zoom={zoom}
+          regions={left?.regions ?? []}
+          selectedRegion={anchorRegion}
+          onSelectRegion={selectAnchorRegion}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
         />
@@ -331,6 +369,8 @@ function App() {
           subtitle={right?.file?.name}
           image={result ? rightImage : rightPreviewImage}
           zoom={zoom}
+          regions={[]}
+          selectedRegion={null}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
         />
@@ -389,7 +429,20 @@ function FilePicker({ label, side, active, data, page, setPage, onFile, onActiva
   );
 }
 
-function ImagePane({ title, side, active, subtitle, image, zoom, onActivate, onPasteImage }) {
+function ImagePane({
+  title,
+  side,
+  active,
+  subtitle,
+  image,
+  zoom,
+  regions = [],
+  selectedRegion,
+  onSelectRegion,
+  onActivate,
+  onPasteImage,
+}) {
+  const [imageSize, setImageSize] = useState(null);
   return (
     <article
       className={`pane ${active ? "active" : ""}`}
@@ -404,7 +457,36 @@ function ImagePane({ title, side, active, subtitle, image, zoom, onActivate, onP
       </div>
       <div className="canvas">
         {image ? (
-          <img src={image} style={{ width: `${zoom * 100}%` }} alt={title} />
+          <div className="image-stage" style={{ width: `${zoom * 100}%` }}>
+            <img
+              src={image}
+              alt={title}
+              onLoad={(event) =>
+                setImageSize({
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                })
+              }
+            />
+            {imageSize && regions.length > 0 && (
+              <div className="region-layer" aria-label="基準領域候補">
+                {regions.map((region, index) => (
+                  <button
+                    key={`${region.x}-${region.y}-${region.width}-${region.height}-${index}`}
+                    className={`region-box ${isSameRegion(region, selectedRegion) ? "selected" : ""}`}
+                    title={`${region.label} (${region.width}x${region.height})`}
+                    style={regionStyle(region, imageSize)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectRegion?.(region);
+                    }}
+                  >
+                    {index + 1}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         ) : (
           <div className="empty">No image</div>
         )}
@@ -469,6 +551,27 @@ function extensionForMime(mimeType) {
   if (mimeType === "image/webp") return "webp";
   if (mimeType === "image/gif") return "gif";
   return "png";
+}
+
+function regionStyle(region, imageSize) {
+  return {
+    left: `${(region.x / imageSize.width) * 100}%`,
+    top: `${(region.y / imageSize.height) * 100}%`,
+    width: `${(region.width / imageSize.width) * 100}%`,
+    height: `${(region.height / imageSize.height) * 100}%`,
+  };
+}
+
+function isSameRegion(a, b) {
+  return Boolean(
+    a &&
+      b &&
+      a.x === b.x &&
+      a.y === b.y &&
+      a.width === b.width &&
+      a.height === b.height &&
+      a.label === b.label,
+  );
 }
 
 createRoot(document.getElementById("root")).render(<App />);

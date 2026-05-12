@@ -1,5 +1,6 @@
 import os
 import unittest
+import json
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
@@ -36,6 +37,38 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertEqual(body["pages"][0]["width"], 800)
         self.assertEqual(body["pages"][0]["height"], 600)
 
+    def test_convert_png_suggests_anchor_regions(self):
+        with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as image:
+            response = self.client.post(
+                "/api/convert",
+                files={"file": ("gear_a.png", image, "image/png")},
+                data={"page": "0"},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("regions", body)
+        self.assertGreater(len(body["regions"]), 0)
+        first_region = body["regions"][0]
+        self.assertIn("label", first_region)
+        self.assertGreater(first_region["width"], 20)
+        self.assertGreater(first_region["height"], 20)
+
+    def test_convert_graph_suggests_plot_frame_region(self):
+        with open(os.path.join(self.samples_dir, "bathtub_curve_a.png"), "rb") as image:
+            response = self.client.post(
+                "/api/convert",
+                files={"file": ("bathtub_curve_a.png", image, "image/png")},
+                data={"page": "0"},
+            )
+        self.assertEqual(response.status_code, 200)
+        regions = response.json()["regions"]
+        frame = next((region for region in regions if region["label"] == "枠線候補"), None)
+        self.assertIsNotNone(frame)
+        self.assertLess(frame["x"], 90)
+        self.assertLess(frame["y"], 45)
+        self.assertGreater(frame["width"], 680)
+        self.assertGreater(frame["height"], 480)
+
     def test_attachment_upload_saves_file_and_cleanup_removes_old_files(self):
         with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as image:
             response = self.client.post("/api/attachments", files={"file": ("clipboard.png", image, "image/png")})
@@ -68,6 +101,24 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertIn("overlay", body)
         self.assertIn("image_b_aligned", body)
         self.assertIsInstance(body["diff_rects"], list)
+
+    def test_diff_accepts_anchor_region(self):
+        anchor_region = {"x": 0, "y": 0, "width": 800, "height": 600, "label": "全体枠候補"}
+        with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as a, open(
+            os.path.join(self.samples_dir, "gear_b.png"), "rb"
+        ) as b:
+            response = self.client.post(
+                "/api/diff",
+                files={
+                    "file_a": ("gear_a.png", a, "image/png"),
+                    "file_b": ("gear_b.png", b, "image/png"),
+                },
+                data={"page_a": "0", "page_b": "0", "category": "図面", "anchor_region": json.dumps(anchor_region)},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["alignment"]["success"], body["alignment"]["warning"])
+        self.assertIn("anchor region", body["alignment"]["method"])
 
     def test_diff_accepts_different_size_and_aspect_ratio_screenshots(self):
         source = Image.open(os.path.join(self.samples_dir, "gear_a.png")).convert("RGB")
