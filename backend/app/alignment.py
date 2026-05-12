@@ -43,22 +43,22 @@ def align_to_reference(reference_bgr: np.ndarray, candidate_bgr: np.ndarray, cat
 
         src = np.float32([kp_b[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
         dst = np.float32([kp_a[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-        matrix, mask = _estimate_homography(src, dst, params["ransac"])
-        if matrix is None or mask is None:
-            continue
+        for transform_name, matrix, mask in _estimate_transforms(src, dst, params["ransac"]):
+            if matrix is None or mask is None:
+                continue
 
-        inliers = int(mask.ravel().sum())
-        if inliers < max(6, params["min_matches"] // 2):
-            continue
-        warning = _validate_homography(matrix, reference_bgr.shape[:2], candidate_bgr.shape[:2])
-        if warning:
-            continue
-        attempts.append((inliers, len(good), detector_name, matrix))
+            inliers = int(mask.ravel().sum())
+            if inliers < max(6, params["min_matches"] // 2):
+                continue
+            warning = _validate_homography(matrix, reference_bgr.shape[:2], candidate_bgr.shape[:2])
+            if warning:
+                continue
+            attempts.append((inliers, len(good), f"{detector_name} {transform_name}", matrix))
 
     if not attempts:
         return _failed(candidate_bgr, "Could not estimate a stable feature transform")
 
-    inliers, matches, detector_name, matrix = max(attempts, key=lambda item: (item[0], item[1]))
+    inliers, matches, transform_label, matrix = max(attempts, key=lambda item: (item[0], item[1]))
     matrix, refined = _refine_with_ecc(fixed, moving, matrix, reference_bgr.shape[:2])
 
     h, w = reference_bgr.shape[:2]
@@ -66,7 +66,7 @@ def align_to_reference(reference_bgr: np.ndarray, candidate_bgr: np.ndarray, cat
     return AlignmentResult(
         image=aligned,
         success=True,
-        method=f"{detector_name} + robust homography" + (" + ECC refine" if refined else ""),
+        method=f"{transform_label} + robust transform" + (" + ECC refine" if refined else ""),
         warning=None,
         matches=matches,
         inliers=inliers,
@@ -94,12 +94,32 @@ def _match_descriptors(des_moving: np.ndarray, des_fixed: np.ndarray, norm: int,
     return good
 
 
-def _estimate_homography(src: np.ndarray, dst: np.ndarray, ransac_threshold: float):
+def _estimate_transforms(src: np.ndarray, dst: np.ndarray, ransac_threshold: float):
     method = getattr(cv2, "USAC_MAGSAC", cv2.RANSAC)
     try:
-        return cv2.findHomography(src, dst, method, ransac_threshold, maxIters=4000, confidence=0.999)
+        matrix, mask = cv2.findHomography(src, dst, method, ransac_threshold, maxIters=4000, confidence=0.999)
     except cv2.error:
-        return cv2.findHomography(src, dst, cv2.RANSAC, ransac_threshold)
+        try:
+            matrix, mask = cv2.findHomography(src, dst, cv2.RANSAC, ransac_threshold)
+        except cv2.error:
+            matrix, mask = None, None
+    yield "homography", matrix, mask
+
+    try:
+        affine, affine_mask = cv2.estimateAffinePartial2D(
+            src,
+            dst,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=ransac_threshold,
+            maxIters=4000,
+            confidence=0.995,
+            refineIters=20,
+        )
+    except cv2.error:
+        affine, affine_mask = None, None
+    if affine is not None:
+        matrix = np.vstack([affine, [0.0, 0.0, 1.0]]).astype(np.float64)
+        yield "similarity", matrix, affine_mask
 
 
 def _refine_with_ecc(fixed: np.ndarray, moving: np.ndarray, matrix: np.ndarray, reference_shape: tuple[int, int]):
@@ -177,7 +197,7 @@ def _validate_homography(matrix: np.ndarray, reference_shape: tuple[int, int], c
 
     area = abs(cv2.contourArea(projected.astype(np.float32)))
     ref_area = float(ref_w * ref_h)
-    if area < ref_area * 0.35 or area > ref_area * 2.5:
+    if area < ref_area * 0.03 or area > ref_area * 8.0:
         return "Estimated transform changes image area too much"
 
     x_min, y_min = projected.min(axis=0)

@@ -1,8 +1,12 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
+from backend.app.attachments import ATTACHMENTS_DIR, cleanup_expired_attachments
 from backend.app.main import app
 
 
@@ -32,6 +36,20 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertEqual(body["pages"][0]["width"], 800)
         self.assertEqual(body["pages"][0]["height"], 600)
 
+    def test_attachment_upload_saves_file_and_cleanup_removes_old_files(self):
+        with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as image:
+            response = self.client.post("/api/attachments", files={"file": ("clipboard.png", image, "image/png")})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        saved_path = ATTACHMENTS_DIR / body["stored_as"]
+        self.assertTrue(saved_path.exists())
+        self.assertEqual(body["retention_days"], 3)
+
+        old_time = (datetime.now(timezone.utc) - timedelta(days=4)).timestamp()
+        os.utime(saved_path, (old_time, old_time))
+        self.assertEqual(cleanup_expired_attachments(), 1)
+        self.assertFalse(saved_path.exists())
+
     def test_diff_png_pair(self):
         with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as a, open(
             os.path.join(self.samples_dir, "gear_b.png"), "rb"
@@ -50,6 +68,32 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertIn("overlay", body)
         self.assertIn("image_b_aligned", body)
         self.assertIsInstance(body["diff_rects"], list)
+
+    def test_diff_accepts_different_size_and_aspect_ratio_screenshots(self):
+        source = Image.open(os.path.join(self.samples_dir, "gear_a.png")).convert("RGB")
+        reference = source.crop((50, 50, 650, 260)).resize((584, 158))
+        candidate = source.crop((30, 30, 760, 460)).resize((502, 296))
+
+        reference_buf = BytesIO()
+        candidate_buf = BytesIO()
+        reference.save(reference_buf, format="PNG")
+        candidate.save(candidate_buf, format="PNG")
+        reference_buf.seek(0)
+        candidate_buf.seek(0)
+
+        response = self.client.post(
+            "/api/diff",
+            files={
+                "file_a": ("reference-crop.png", reference_buf, "image/png"),
+                "file_b": ("candidate-crop.png", candidate_buf, "image/png"),
+            },
+            data={"page_a": "0", "page_b": "0", "category": "汎用"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["alignment"]["success"], body["alignment"]["warning"])
+        self.assertEqual(body["width"], 584)
+        self.assertEqual(body["height"], 158)
 
     def test_diff_threshold_controls_sensitivity(self):
         def request_with_threshold(value):

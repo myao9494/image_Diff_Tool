@@ -7,7 +7,7 @@
  */
 import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, ImageUp, Layers, Loader2, ScanSearch, ZoomIn, ZoomOut } from "lucide-react";
+import { AlertTriangle, Clipboard, ImageUp, Layers, Loader2, ScanSearch, ZoomIn, ZoomOut } from "lucide-react";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002/api";
@@ -30,6 +30,7 @@ function App() {
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [activeSide, setActiveSide] = useState("left");
 
   const canCompare = Boolean(left?.file && right?.file);
   const rightImage = useMemo(() => {
@@ -39,23 +40,44 @@ function App() {
     return toDataUri(result.overlay);
   }, [result, view]);
 
-  async function loadFile(side, file) {
+  async function loadFile(side, file, attachment = null) {
     setError("");
     setResult(null);
     const form = new FormData();
     form.append("file", file);
     try {
       const metadata = await postForm("/analyze", form);
-      const payload = { file, metadata };
+      const payload = { file, metadata, attachment };
       if (side === "left") {
         setLeft(payload);
         setPageA(0);
+        setActiveSide("right");
       } else {
         setRight(payload);
         setPageB(0);
+        setActiveSide("left");
       }
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  async function pasteImage(side, event) {
+    setActiveSide(side);
+    const file = imageFileFromClipboard(event.clipboardData);
+    if (!file) return;
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const attachment = await postForm("/attachments", form);
+      await loadFile(side, file, attachment);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -89,9 +111,29 @@ function App() {
       </header>
 
       <section className="toolbar" aria-label="compare settings">
-        <FilePicker label="A" data={left} page={pageA} setPage={setPageA} onFile={(file) => loadFile("left", file)} />
-        <FilePicker label="B" data={right} page={pageB} setPage={setPageB} onFile={(file) => loadFile("right", file)} />
-        <button className="primary" disabled={!canCompare || busy} onClick={compare}>
+        <FilePicker
+          label="A"
+          side="left"
+          active={activeSide === "left"}
+          data={left}
+          page={pageA}
+          setPage={setPageA}
+          onActivate={setActiveSide}
+          onPasteImage={pasteImage}
+          onFile={(file) => loadFile("left", file)}
+        />
+        <FilePicker
+          label="B"
+          side="right"
+          active={activeSide === "right"}
+          data={right}
+          page={pageB}
+          setPage={setPageB}
+          onActivate={setActiveSide}
+          onPasteImage={pasteImage}
+          onFile={(file) => loadFile("right", file)}
+        />
+        <button className="primary" disabled={!canCompare || busy} onClick={() => compare()}>
           {busy ? <Loader2 className="spin" size={18} /> : <ScanSearch size={18} />}
           比較
         </button>
@@ -160,25 +202,66 @@ function App() {
       </section>
 
       <section className="viewer">
-        <ImagePane title="A 基準" subtitle={left?.file?.name} image={result ? toDataUri(result.image_a) : null} zoom={zoom} />
-        <ImagePane title={view === "overlay" ? "差分オーバーレイ" : view === "mask" ? "差分マスク" : "B 補正済み"} subtitle={right?.file?.name} image={rightImage} zoom={zoom} />
+        <ImagePane
+          title="A 基準"
+          side="left"
+          active={activeSide === "left"}
+          subtitle={left?.file?.name}
+          image={result ? toDataUri(result.image_a) : null}
+          zoom={zoom}
+          onActivate={setActiveSide}
+          onPasteImage={pasteImage}
+        />
+        <ImagePane
+          title={view === "overlay" ? "差分オーバーレイ" : view === "mask" ? "差分マスク" : "B 補正済み"}
+          side="right"
+          active={activeSide === "right"}
+          subtitle={right?.file?.name}
+          image={rightImage}
+          zoom={zoom}
+          onActivate={setActiveSide}
+          onPasteImage={pasteImage}
+        />
       </section>
     </main>
   );
 }
 
-function FilePicker({ label, data, page, setPage, onFile }) {
+function FilePicker({ label, side, active, data, page, setPage, onFile, onActivate, onPasteImage }) {
   const pages = data?.metadata?.pages ?? [];
+  const pasted = Boolean(data?.attachment);
   return (
-    <div className="file-picker">
+    <div
+      className={`file-picker ${active ? "active" : ""}`}
+      tabIndex={0}
+      onFocus={() => onActivate(side)}
+      onClick={() => onActivate(side)}
+      onPaste={(event) => onPasteImage(side, event)}
+    >
       <label className="upload">
         <ImageUp size={18} />
         <span>File {label}</span>
-        <input type="file" onChange={(event) => event.target.files?.[0] && onFile(event.target.files[0])} />
+        <input
+          type="file"
+          onChange={(event) => {
+            if (event.target.files?.[0]) {
+              onFile(event.target.files[0]);
+              event.target.value = "";
+            }
+          }}
+        />
       </label>
+      <div className="paste-hint">
+        <Clipboard size={16} />
+        <span>cmd+V</span>
+      </div>
       <div className="file-meta">
         <strong>{data?.file?.name ?? "未選択"}</strong>
-        <small>{data ? `${data.metadata.format.toUpperCase()} / ${data.metadata.page_count} page` : "ファイルを選択"}</small>
+        <small>
+          {data
+            ? `${data.metadata.format.toUpperCase()} / ${data.metadata.page_count} page${pasted ? " / 添付保存済み" : ""}`
+            : "ファイル選択または貼り付け"}
+        </small>
       </div>
       <label className="page-select">
         <Layers size={16} />
@@ -194,12 +277,18 @@ function FilePicker({ label, data, page, setPage, onFile }) {
   );
 }
 
-function ImagePane({ title, subtitle, image, zoom }) {
+function ImagePane({ title, side, active, subtitle, image, zoom, onActivate, onPasteImage }) {
   return (
-    <article className="pane">
+    <article
+      className={`pane ${active ? "active" : ""}`}
+      tabIndex={0}
+      onFocus={() => onActivate(side)}
+      onClick={() => onActivate(side)}
+      onPaste={(event) => onPasteImage(side, event)}
+    >
       <div className="pane-title">
         <strong>{title}</strong>
-        <span>{subtitle ?? "比較後に表示"}</span>
+        <span>{subtitle ?? "クリックしてcmd+V"}</span>
       </div>
       <div className="canvas">
         {image ? (
@@ -232,6 +321,23 @@ async function postForm(path, form) {
 
 function toDataUri(image) {
   return `data:${image.mime_type};base64,${image.data}`;
+}
+
+function imageFileFromClipboard(clipboardData) {
+  const items = Array.from(clipboardData?.items ?? []);
+  const imageItem = items.find((item) => item.kind === "file" && item.type.startsWith("image/"));
+  const blob = imageItem?.getAsFile();
+  if (!blob) return null;
+  const extension = extensionForMime(blob.type);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return new File([blob], `clipboard-${timestamp}.${extension}`, { type: blob.type || "image/png" });
+}
+
+function extensionForMime(mimeType) {
+  if (mimeType === "image/jpeg") return "jpg";
+  if (mimeType === "image/webp") return "webp";
+  if (mimeType === "image/gif") return "gif";
+  return "png";
 }
 
 createRoot(document.getElementById("root")).render(<App />);

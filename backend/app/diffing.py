@@ -8,7 +8,12 @@ def resize_to_match(reference_bgr: np.ndarray, candidate_bgr: np.ndarray) -> np.
     h, w = reference_bgr.shape[:2]
     if candidate_bgr.shape[:2] == (h, w):
         return candidate_bgr
-    return cv2.resize(candidate_bgr, (w, h), interpolation=cv2.INTER_AREA)
+    canvas = np.full((h, w, 3), 255, dtype=candidate_bgr.dtype)
+    src_h, src_w = candidate_bgr.shape[:2]
+    copy_h = min(h, src_h)
+    copy_w = min(w, src_w)
+    canvas[:copy_h, :copy_w] = candidate_bgr[:copy_h, :copy_w]
+    return canvas
 
 
 def build_visual_diff(reference_bgr: np.ndarray, aligned_bgr: np.ndarray, threshold: float = 0.1) -> dict:

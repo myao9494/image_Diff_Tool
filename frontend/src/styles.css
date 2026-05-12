@@ -50,6 +50,7 @@ p {
 
 .primary,
 .upload,
+.paste-hint,
 .segmented button,
 .icon-group button {
   min-height: 36px;
@@ -88,9 +89,24 @@ p {
 }
 
 .file-picker {
+  min-height: 54px;
+  padding: 6px;
   display: flex;
   gap: 10px;
   align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  outline: none;
+}
+
+.file-picker.active {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.file-picker:focus-visible {
+  border-color: #7dd3fc;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
 }
 
 .upload {
@@ -102,8 +118,15 @@ p {
   display: none;
 }
 
+.paste-hint {
+  padding: 0 10px;
+  color: #bae6fd;
+  border-style: dashed;
+  background: #0f172a;
+}
+
 .file-meta {
-  min-width: 120px;
+  min-width: 160px;
   display: flex;
   flex-direction: column;
 }
@@ -235,6 +258,16 @@ select {
   background: #1e293b;
   display: flex;
   flex-direction: column;
+  outline: none;
+}
+
+.pane.active {
+  border-color: #38bdf8;
+}
+
+.pane:focus-visible {
+  border-color: #7dd3fc;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
 }
 
 .pane-title {

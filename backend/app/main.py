@@ -7,8 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .attachments import RETENTION_DAYS, cleanup_expired_attachments, save_attachment
 from .alignment import align_to_reference
-from .diffing import build_visual_diff, resize_to_match
+from .diffing import build_visual_diff
 from .image_io import ConversionError, cv_to_pil, encode_png, pil_to_cv, rasterize_upload
 from .models import AlignmentInfo, AnalyzeResponse, DiffResponse, ImagePayload, PageInfo
 
@@ -30,6 +31,24 @@ ASSETS_DIR = DIST_DIR / "assets"
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/attachments")
+async def upload_attachment(file: UploadFile = File(...)) -> JSONResponse:
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Attachment is empty")
+    deleted_expired = cleanup_expired_attachments()
+    path = save_attachment(file.filename or "clipboard.png", content)
+    return JSONResponse(
+        {
+            "filename": file.filename or "clipboard.png",
+            "stored_as": path.name,
+            "size": len(content),
+            "retention_days": RETENTION_DAYS,
+            "deleted_expired": deleted_expired,
+        }
+    )
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
@@ -78,7 +97,7 @@ async def diff(
     raster_b = _select_page(pages_b, page_b)
 
     image_a = pil_to_cv(raster_a.image)
-    image_b = resize_to_match(image_a, pil_to_cv(raster_b.image))
+    image_b = pil_to_cv(raster_b.image)
     alignment = align_to_reference(image_a, image_b, category=category)
     diff_result = build_visual_diff(image_a, alignment.image, threshold=diff_threshold)
 
