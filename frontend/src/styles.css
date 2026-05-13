@@ -498,6 +498,70 @@ select {
   background: #111827;
 }
 
+.memo-editor {
+  padding: 10px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  border-bottom: 1px solid #374151;
+  background: #171717;
+}
+
+.memo-text-control {
+  width: min(320px, 100%);
+}
+
+.memo-text-control textarea {
+  min-height: 58px;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #111827;
+  color: #f9fafb;
+  resize: vertical;
+}
+
+.compact-control {
+  min-width: 180px;
+}
+
+.compact-control input {
+  width: 180px;
+  accent-color: #f97316;
+}
+
+.number-control {
+  width: 76px;
+}
+
+.number-control input {
+  height: 34px;
+  width: 100%;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #111827;
+  color: #f9fafb;
+}
+
+.number-control input:disabled {
+  opacity: 0.45;
+}
+
+.check-control {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #e5e7eb;
+  font-size: 13px;
+}
+
+.check-control input {
+  accent-color: #f97316;
+}
+
 .slider-control {
   min-width: 280px;
 }
@@ -557,11 +621,14 @@ select {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 2px;
+  width: 18px;
   background: #f8fafc;
-  box-shadow: 0 0 0 1px #111827, 0 0 18px rgba(248, 250, 252, 0.5);
-  transform: translateX(-1px);
-  pointer-events: none;
+  background-clip: content-box;
+  box-shadow: inset 8px 0 0 transparent, inset -8px 0 0 transparent, 0 0 18px rgba(248, 250, 252, 0.5);
+  cursor: ew-resize;
+  padding: 0 8px;
+  transform: translateX(-9px);
+  pointer-events: auto;
 }
 
 .comparison-handle span {
@@ -589,37 +656,65 @@ select {
 
 .memo-note {
   position: absolute;
-  width: 180px;
   min-height: 56px;
   padding: 0;
   cursor: grab;
+  display: flex;
   touch-action: none;
 }
 
-.memo-note::before {
-  content: "";
+.memo-leader {
   position: absolute;
-  left: 18px;
-  top: 46px;
-  width: 148px;
-  height: 6px;
-  background: #ff1d14;
-  transform: rotate(128deg);
-  transform-origin: left center;
+  left: -420px;
+  top: -240px;
+  width: 1040px;
+  height: 760px;
   z-index: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.memo-leader line {
+  stroke: rgba(255, 29, 20, var(--memo-alpha, 1));
+  stroke-width: 6px;
+  stroke-linecap: butt;
+}
+
+.memo-leader-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #ff1d14;
+  transform: translate(-7px, -7px);
+  cursor: crosshair;
+  z-index: 4;
+  opacity: 0;
+}
+
+.memo-leader-handle.end {
+  background: #ffffff;
+  border-color: #ff1d14;
+}
+
+.memo-note.selected .memo-leader-handle {
+  opacity: 1;
 }
 
 .memo-note textarea {
   position: relative;
   width: 100%;
-  min-height: 52px;
-  resize: vertical;
+  height: 100%;
+  min-height: inherit;
+  resize: none;
   border: 2px solid transparent;
   border-radius: 8px;
   padding: 9px 12px;
-  background: #ff1d14;
+  background: rgba(255, 29, 20, var(--memo-alpha, 1));
   color: #ffffff;
-  font-size: 24px;
+  font-size: var(--memo-font-size, 24px);
   font-weight: 800;
   line-height: 1.15;
   text-align: center;
@@ -632,7 +727,7 @@ select {
   box-shadow: 0 0 0 3px rgba(255, 29, 20, 0.32);
 }
 
-.memo-note button {
+.memo-delete {
   position: absolute;
   right: -10px;
   top: -10px;
@@ -707,6 +802,7 @@ select {
   .viewer,
   .memo-header,
   .memo-toolbar,
+  .memo-editor,
   .memo-stage-wrap {
     padding-left: 12px;
     padding-right: 12px;
