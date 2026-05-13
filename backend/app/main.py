@@ -417,6 +417,14 @@ def serve_frontend() -> FileResponse:
     return FileResponse(index)
 
 
+@app.get("/{filename}", include_in_schema=False)
+def serve_frontend_file(filename: str) -> FileResponse:
+    path = DIST_DIR / filename
+    if path.exists() and path.is_file():
+        return FileResponse(path)
+    raise HTTPException(status_code=404, detail="Not found")
+
+
 @app.get("/{path:path}", include_in_schema=False)
 def serve_spa(path: str) -> FileResponse:
     if path.startswith("api/"):
