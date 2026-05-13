@@ -47,6 +47,8 @@ class DiffResponse(BaseModel):
     height: int
     alignment: AlignmentInfo
     image_a: ImagePayload
+    image_a_original: ImagePayload
+    image_b_original: ImagePayload
     image_b_aligned: ImagePayload
     overlay: ImagePayload
     mask: ImagePayload

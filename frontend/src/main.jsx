@@ -3,7 +3,7 @@
  *
  * ユーザーが2つの画像（またはPDF/TIFF等）を選択し、
  * バックエンドのAPIに送信して差分比較を行うための機能を提供する。
- * 比較結果は「補正B」「差分」「マスク」の各ビューで切り替えて表示できる。
+ * 比較結果は「元画像」「補正B」「差分」「マスク」の各ビューで切り替えて表示できる。
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -31,10 +31,12 @@ import "./styles.css";
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 const CATEGORIES = ["汎用", "図面", "グラフ", "書類"];
 const VIEWS = [
+  { id: "original", label: "元画像" },
   { id: "aligned", label: "補正B" },
   { id: "overlay", label: "差分" },
   { id: "mask", label: "マスク" },
 ];
+const TAB_TOGGLE_VIEWS = ["aligned", "overlay"];
 const MEMO_DB_NAME = "visual-diff-memo";
 const MEMO_DB_STORE = "payloads";
 const MEMO_STORAGE_KEY = "visual-diff-memo-fallback";
@@ -68,16 +70,24 @@ function App() {
   const comparableGitFiles = useMemo(() => (gitInfo?.files ?? []).filter((file) => file.comparable), [gitInfo]);
   const currentGitFile = comparableGitFiles[gitIndex] ?? null;
   const activeResult = activeTab === "git" ? gitResult : result;
+  const leftPreviewImage = left?.preview ? toDataUri(left.preview) : null;
+  const rightPreviewImage = right?.preview ? toDataUri(right.preview) : null;
   const rightImage = useMemo(() => {
     if (!activeResult) return null;
+    if (view === "original") return toDataUri(activeResult.image_b_original ?? activeResult.image_b_aligned);
     if (view === "aligned") return toDataUri(activeResult.image_b_aligned);
     if (view === "mask") return toDataUri(activeResult.mask);
     return toDataUri(activeResult.overlay);
   }, [activeResult, view]);
-  const leftPreviewImage = left?.preview ? toDataUri(left.preview) : null;
-  const rightPreviewImage = right?.preview ? toDataUri(right.preview) : null;
+  const leftImage = useMemo(() => {
+    if (!activeResult) return activeTab === "git" ? null : leftPreviewImage;
+    if (view === "original") return toDataUri(activeResult.image_a_original ?? activeResult.image_a);
+    return toDataUri(activeResult.image_a);
+  }, [activeResult, activeTab, leftPreviewImage, view]);
   const rightPaneTitle = activeResult
-    ? view === "overlay"
+    ? view === "original"
+      ? "B 元画像"
+      : view === "overlay"
       ? "差分オーバーレイ"
       : view === "mask"
         ? "差分マスク"
@@ -192,6 +202,22 @@ function App() {
     window.addEventListener("keydown", handleGitKeys);
     return () => window.removeEventListener("keydown", handleGitKeys);
   }, [activeTab, gitIndex, comparableGitFiles]);
+
+  useEffect(() => {
+    function handleResultViewKeys(event) {
+      if (!activeResult || isTypingTarget(event.target) || event.key !== "Tab") return;
+      event.preventDefault();
+      setView((currentView) => {
+        const currentIndex = TAB_TOGGLE_VIEWS.indexOf(currentView);
+        if (event.shiftKey) {
+          return currentIndex === 0 ? TAB_TOGGLE_VIEWS[1] : TAB_TOGGLE_VIEWS[0];
+        }
+        return currentIndex === 1 ? TAB_TOGGLE_VIEWS[0] : TAB_TOGGLE_VIEWS[1];
+      });
+    }
+    window.addEventListener("keydown", handleResultViewKeys);
+    return () => window.removeEventListener("keydown", handleResultViewKeys);
+  }, [activeResult]);
 
   function selectCategory(nextCategory) {
     setCategory(nextCategory);
@@ -442,9 +468,9 @@ function App() {
           side="left"
           active={activeSide === "left"}
           subtitle={activeTab === "git" ? currentGitFile?.path : left?.file?.name}
-          image={activeResult ? toDataUri(activeResult.image_a) : activeTab === "git" ? null : leftPreviewImage}
+          image={leftImage}
           zoom={zoom}
-          regions={activeTab === "git" ? [] : left?.regions ?? []}
+          regions={activeTab === "git" || (activeResult && view !== "original") ? [] : left?.regions ?? []}
           selectedRegion={anchorRegion}
           onSelectRegion={selectAnchorRegion}
           onActivate={setActiveSide}
