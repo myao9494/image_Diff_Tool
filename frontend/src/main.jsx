@@ -40,6 +40,7 @@ const TAB_TOGGLE_VIEWS = ["aligned", "overlay"];
 const MEMO_DB_NAME = "visual-diff-memo";
 const MEMO_DB_STORE = "payloads";
 const MEMO_STORAGE_KEY = "visual-diff-memo-fallback";
+const CLIPBOARD_IMAGE_SCALE = 2;
 const MEMO_DEFAULTS = {
   text: "めも",
   opacity: 60,
@@ -367,6 +368,7 @@ function App() {
               onActivate={setActiveSide}
               onPasteImage={pasteImage}
               onFile={(file) => loadFile("left", file)}
+              onDropFile={(file) => loadFile("left", file)}
             />
             <FilePicker
               label="B"
@@ -378,6 +380,7 @@ function App() {
               onActivate={setActiveSide}
               onPasteImage={pasteImage}
               onFile={(file) => loadFile("right", file)}
+              onDropFile={(file) => loadFile("right", file)}
             />
             <button className="primary" disabled={!canCompare || busy} onClick={() => compare()}>
               {busy ? <Loader2 className="spin" size={18} /> : <ScanSearch size={18} />}
@@ -487,6 +490,7 @@ function App() {
           onSelectRegion={selectAnchorRegion}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
+          onDropFile={(file) => loadFile("left", file)}
         />
         <ImagePane
           title={rightPaneTitle}
@@ -499,6 +503,7 @@ function App() {
           selectedRegion={null}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
+          onDropFile={(file) => loadFile("right", file)}
         />
       </section>
     </main>
@@ -776,9 +781,13 @@ function MemoDiffApp() {
 
   async function copyMemoImage(side) {
     try {
-      await copyImageWithNotes(side === "a" ? imageA : imageB, safeNotes, getMemoStageSize());
+      if (side === "pair") {
+        await copySideBySideImageWithNotes(imageA, imageB, safeNotes, getMemoStageSize());
+      } else {
+        await copyImageWithNotes(side === "a" ? imageA : imageB, safeNotes, getMemoStageSize());
+      }
       setContextMenu(null);
-      setNotice(`画像${side.toUpperCase()}をメモ付きでクリップボードに保存しました`);
+      setNotice(side === "pair" ? "元データ / 変更後を左右配置でクリップボードに保存しました" : `画像${side.toUpperCase()}をメモ付きでクリップボードに保存しました`);
       window.setTimeout(() => setNotice(""), 2400);
     } catch (err) {
       setContextMenu(null);
@@ -984,6 +993,7 @@ function MemoDiffApp() {
 
       {contextMenu && (
         <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+          <button onClick={() => copyMemoImage("pair")}>元データ / 変更後を左右配置でコピー</button>
           <button onClick={() => copyMemoImage("a")}>画像Aをメモ付きでクリップボードに保存</button>
           <button onClick={() => copyMemoImage("b")}>画像Bをメモ付きでクリップボードに保存</button>
         </div>
@@ -992,16 +1002,36 @@ function MemoDiffApp() {
   );
 }
 
-function FilePicker({ label, side, active, data, page, setPage, onFile, onActivate, onPasteImage }) {
+function FilePicker({ label, side, active, data, page, setPage, onFile, onActivate, onPasteImage, onDropFile }) {
   const pages = data?.metadata?.pages ?? [];
   const pasted = Boolean(data?.attachment);
+  const [dragging, setDragging] = useState(false);
+
+  function handleDrop(event) {
+    event.preventDefault();
+    setDragging(false);
+    onActivate(side);
+    const file = firstDroppedFile(event.dataTransfer);
+    if (file) onDropFile(file);
+  }
+
   return (
     <div
-      className={`file-picker ${active ? "active" : ""}`}
+      className={`file-picker ${active ? "active" : ""} ${dragging ? "dragging" : ""}`}
       tabIndex={0}
       onFocus={() => onActivate(side)}
       onClick={() => onActivate(side)}
       onPaste={(event) => onPasteImage(side, event)}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setDragging(true);
+        onActivate(side);
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false);
+      }}
+      onDrop={handleDrop}
     >
       <label className="upload">
         <ImageUp size={18} />
@@ -1025,7 +1055,7 @@ function FilePicker({ label, side, active, data, page, setPage, onFile, onActiva
         <small>
           {data
             ? `${data.metadata.format.toUpperCase()} / ${data.metadata.page_count} page${pasted ? " / 添付保存済み" : ""}`
-            : "ファイル選択または貼り付け"}
+            : "選択 / ドロップ / 貼り付け"}
         </small>
       </div>
       <label className="page-select">
@@ -1054,19 +1084,40 @@ function ImagePane({
   onSelectRegion,
   onActivate,
   onPasteImage,
+  onDropFile,
 }) {
   const [imageSize, setImageSize] = useState(null);
+  const [dragging, setDragging] = useState(false);
+
+  function handleDrop(event) {
+    event.preventDefault();
+    setDragging(false);
+    onActivate(side);
+    const file = firstDroppedFile(event.dataTransfer);
+    if (file) onDropFile?.(file);
+  }
+
   return (
     <article
-      className={`pane ${active ? "active" : ""}`}
+      className={`pane ${active ? "active" : ""} ${dragging ? "dragging" : ""}`}
       tabIndex={0}
       onFocus={() => onActivate(side)}
       onClick={() => onActivate(side)}
       onPaste={(event) => onPasteImage(side, event)}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setDragging(true);
+        onActivate(side);
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false);
+      }}
+      onDrop={handleDrop}
     >
       <div className="pane-title">
         <strong>{title}</strong>
-        <span>{subtitle ?? "クリックしてcmd+V"}</span>
+        <span>{subtitle ?? "クリックしてcmd+V / ドロップ"}</span>
       </div>
       <div className="canvas">
         {image ? (
@@ -1157,6 +1208,10 @@ function imageFileFromClipboard(clipboardData) {
   const extension = extensionForMime(blob.type);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   return new File([blob], `clipboard-${timestamp}.${extension}`, { type: blob.type || "image/png" });
+}
+
+function firstDroppedFile(dataTransfer) {
+  return Array.from(dataTransfer?.files ?? []).find((file) => file.size > 0) ?? null;
 }
 
 function extensionForMime(mimeType) {
@@ -1329,14 +1384,73 @@ async function copyImageWithNotes(imageSrc, notes, stageSize = null) {
   }
   const image = await loadImage(imageSrc);
   const canvas = document.createElement("canvas");
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
+  canvas.width = image.naturalWidth * CLIPBOARD_IMAGE_SCALE;
+  canvas.height = image.naturalHeight * CLIPBOARD_IMAGE_SCALE;
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(image, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
   drawNotes(ctx, notes, canvas.width, canvas.height, stageSize);
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("メモ付き画像を作成できませんでした");
   await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+}
+
+async function copySideBySideImageWithNotes(imageASrc, imageBSrc, notes, stageSize = null) {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    throw new Error("このブラウザでは画像のクリップボード保存に対応していません");
+  }
+  const [imageA, imageB] = await Promise.all([loadImage(imageASrc), loadImage(imageBSrc)]);
+  const padding = 24;
+  const gap = 24;
+  const labelHeight = 56;
+  const imageTop = padding + labelHeight;
+  const scaledPadding = padding * CLIPBOARD_IMAGE_SCALE;
+  const scaledGap = gap * CLIPBOARD_IMAGE_SCALE;
+  const scaledLabelHeight = labelHeight * CLIPBOARD_IMAGE_SCALE;
+  const scaledImageTop = imageTop * CLIPBOARD_IMAGE_SCALE;
+  const imageAWidth = imageA.naturalWidth * CLIPBOARD_IMAGE_SCALE;
+  const imageAHeight = imageA.naturalHeight * CLIPBOARD_IMAGE_SCALE;
+  const imageBWidth = imageB.naturalWidth * CLIPBOARD_IMAGE_SCALE;
+  const imageBHeight = imageB.naturalHeight * CLIPBOARD_IMAGE_SCALE;
+  const canvas = document.createElement("canvas");
+  canvas.width = scaledPadding * 2 + imageAWidth + scaledGap + imageBWidth;
+  canvas.height = scaledPadding * 2 + scaledLabelHeight + Math.max(imageAHeight, imageBHeight);
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  const leftX = scaledPadding;
+  const rightX = scaledPadding + imageAWidth + scaledGap;
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  drawCopyPanelLabel(ctx, "元データ", leftX, scaledPadding, imageAWidth, scaledLabelHeight);
+  drawCopyPanelLabel(ctx, "変更後", rightX, scaledPadding, imageBWidth, scaledLabelHeight);
+  ctx.drawImage(imageA, leftX, scaledImageTop, imageAWidth, imageAHeight);
+  ctx.drawImage(imageB, rightX, scaledImageTop, imageBWidth, imageBHeight);
+  ctx.save();
+  ctx.translate(rightX, scaledImageTop);
+  drawNotes(ctx, notes, imageBWidth, imageBHeight, stageSize);
+  ctx.restore();
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("左右配置の画像を作成できませんでした");
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+}
+
+function drawCopyPanelLabel(ctx, label, x, y, width, height) {
+  ctx.save();
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, width, height);
+  ctx.fillStyle = "#0f172a";
+  ctx.font = `700 ${Math.max(24, Math.round(height * 0.43))}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, x + width / 2, y + height / 2);
+  ctx.restore();
 }
 
 function drawNotes(ctx, notes, width, height, stageSize = null) {
