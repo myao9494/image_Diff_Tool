@@ -7,6 +7,7 @@ class PageInfo(BaseModel):
     index: int
     width: int
     height: int
+    warnings: list[str] = Field(default_factory=list)
 
 
 class AnalyzeResponse(BaseModel):
@@ -14,6 +15,7 @@ class AnalyzeResponse(BaseModel):
     format: str
     page_count: int
     pages: list[PageInfo]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class AlignmentInfo(BaseModel):
@@ -54,6 +56,7 @@ class DiffResponse(BaseModel):
     diff_pixels: int
     diff_ratio: float
     diff_threshold: float = 0.1
+    conversion_warnings: list[str] = Field(default_factory=list)
 
 
 class RediffRequest(BaseModel):

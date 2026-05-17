@@ -1,6 +1,8 @@
 import os
 import unittest
 import json
+import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
@@ -164,6 +166,35 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertGreaterEqual(body["pages"][0]["width"], 260)
         self.assertGreaterEqual(body["pages"][0]["height"], 220)
 
+    def test_excalidraw_reports_approximated_elements(self):
+        payload = {
+            "type": "excalidraw",
+            "elements": [
+                {
+                    "id": "rotated-rect",
+                    "type": "rectangle",
+                    "x": 10,
+                    "y": 10,
+                    "width": 120,
+                    "height": 80,
+                    "angle": 0.5,
+                    "strokeColor": "#000000",
+                    "backgroundColor": "transparent",
+                    "strokeWidth": 2,
+                    "isDeleted": False,
+                }
+            ],
+            "appState": {},
+        }
+
+        response = self.client.post(
+            "/api/analyze",
+            files={"file": ("rotated.excalidraw", BytesIO(json.dumps(payload).encode("utf-8")), "application/json")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any("rotation" in warning for warning in response.json()["warnings"]))
+
     def test_diff_accepts_anchor_region(self):
         anchor_region = {"x": 0, "y": 0, "width": 800, "height": 600, "label": "全体枠候補"}
         with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as a, open(
@@ -299,6 +330,33 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertEqual(fallback_response.status_code, 200)
         self.assertEqual(fallback_response.json()["diff_pixels"], rediff_body["diff_pixels"])
         self.assertTrue(fallback_response.json()["result_id"])
+
+    def test_git_diff_handles_staged_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = os.path.join(tmp, "old.png")
+            Image.new("RGB", (80, 60), "white").save(image_path)
+            self._git(tmp, "init", "--quiet")
+            self._git(tmp, "config", "user.email", "review@example.com")
+            self._git(tmp, "config", "user.name", "Review")
+            self._git(tmp, "add", "old.png")
+            self._git(tmp, "commit", "--quiet", "-m", "initial image")
+            self._git(tmp, "mv", "old.png", "new.png")
+
+            images_response = self.client.post("/api/git/images", json={"folder": tmp})
+            self.assertEqual(images_response.status_code, 200, images_response.text)
+            files = images_response.json()["files"]
+            renamed = next((item for item in files if item["path"] == "new.png"), None)
+            self.assertIsNotNone(renamed)
+            self.assertEqual(renamed["head_path"], "old.png")
+            self.assertTrue(renamed["comparable"])
+
+            diff_response = self.client.post("/api/git/diff", json={"folder": tmp, **renamed})
+            self.assertEqual(diff_response.status_code, 200, diff_response.text)
+            self.assertEqual(diff_response.json()["page_a"], 0)
+            self.assertEqual(diff_response.json()["page_b"], 0)
+
+    def _git(self, cwd, *args):
+        subprocess.run(["git", "-C", cwd, *args], check=True, capture_output=True)
 
     def test_bom_alignment_stays_sane(self):
         with open(os.path.join(self.samples_dir, "bom_a.png"), "rb") as a, open(

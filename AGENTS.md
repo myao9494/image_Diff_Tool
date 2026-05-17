@@ -1,28 +1,29 @@
 # 画像差分ツール (Visual Diff Tool) 仕様書
 
 ## 概要
-PNG, SVG, Excalidraw, マルチTIFF, マルチPDF などの多様な画像・図面形式を比較し、ズレを自動補正して差分を表示するWebアプリおよびVSCode拡張機能。
+PNG, SVG, Excalidraw, マルチTIFF, マルチPDF などの多様な画像・図面形式を比較し、ズレを自動補正して差分を表示するローカルWebアプリ。VSCode拡張機能は今後の開発対象。
 
 ## 主要機能
 - **フォーマット変換 & マルチページ分解**: SVG, Excalidraw, TIFF, PDF を PNG に内部変換。
-    - Excalidraw は Node.js ツール等を介して変換。
-    - **マルチページ対応**: マルチPDFやマルチTIFFから、全ページ（レイヤー/フレーム）を個別のPNG画像として抽出。
+    - Excalidraw はPython内蔵の軽量レンダラーで基本図形とテキストを変換。埋め込み画像、要素回転、矢印ヘッド、テキストスタイル、透明度は未対応または近似として警告を返す。
+    - **マルチページ対応**: マルチPDFやマルチTIFFからページ情報を取得し、UIで選択されたページ（フレーム）だけをPNG相当にラスタライズして比較。
 - **ズレ補正 (Alignment)**: 特徴量マッチング（ORB/SIFT等）を用いた画像の位置合わせ（回転・拡大縮小・歪みに対応）。
 - **差分表示 (Visual Diff)**:
     - **Side-by-Side (左右二画面)**: 差分箇所を色付けして強調。
     - **ページセレクター**: マルチページファイル比較時、比較対象のページ（シート）をUI上で選択・切り替え。
-- **VSCode連携**: ローカルで起動する Backend API を介してエディタ内で差分を確認。
+- **Git差分連携**: ローカルで起動する Backend API を介して、Git管理フォルダ内の変更画像をHEAD側画像と比較。リネーム/コピー時は現在パスとHEAD側パスを分けて扱う。
+- **VSCode連携**: 今後、ローカルBackend APIを介してエディタ内で差分を確認できる拡張機能を実装予定。
 
 ## 技術スタック
 - **Backend**: Python (FastAPI) + OpenCV (Docker非使用、ローカル環境)
 - **Frontend**: React (Vanilla CSS)
-- **VSCode Ext**: TypeScript + Webview
+- **VSCode Ext**: TypeScript + Webview（未実装）
 - **画像処理・変換**: OpenCV, Pillow, PyMuPDF (fitz), CairoSVG
 
 ## 開発フェーズ
 1. [/] 基礎調査・技術検証 (OpenCVによるズレ補正の精度確認 & テスト画像サンプルの自動生成)
-2. [ ] Backend APIの実装 (画像変換 + マッチング)
-3. [ ] Web UIの実装 (差分表示ツール)
+2. [/] Backend APIの実装 (画像変換 + マッチング + Git差分)
+3. [/] Web UIの実装 (差分表示ツール + 差分メモ)
 4. [ ] VSCode拡張機能の実装
 
 ## テスト用画像サンプル (30枚、15ペア)

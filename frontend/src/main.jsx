@@ -428,6 +428,13 @@ function App() {
         </div>
       )}
 
+      {activeResult?.conversion_warnings?.length > 0 && (
+        <div className="notice warning">
+          <AlertTriangle size={18} />
+          変換時の注意: {activeResult.conversion_warnings.join(" / ")}
+        </div>
+      )}
+
       <section className="summary">
         <Stat label="差分ピクセル" value={activeResult ? activeResult.diff_pixels.toLocaleString() : "-"} />
         <Stat label="差分率" value={activeResult ? `${(activeResult.diff_ratio * 100).toFixed(3)}%` : "-"} />
@@ -510,6 +517,7 @@ function App() {
     const nextResult = await postJson("/git/diff", {
       folder: gitFolder,
       path: file.path,
+      head_path: file.head_path,
       category,
       diff_threshold: diffThreshold,
     });
@@ -854,6 +862,9 @@ function ImagePane({
   onPasteImage,
 }) {
   const [imageSize, setImageSize] = useState(null);
+  useEffect(() => {
+    setImageSize(null);
+  }, [image]);
   return (
     <article
       className={`pane ${active ? "active" : ""}`}

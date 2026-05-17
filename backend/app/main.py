@@ -12,9 +12,18 @@ from fastapi.staticfiles import StaticFiles
 from .attachments import RETENTION_DAYS, cleanup_expired_attachments, save_attachment
 from .alignment import align_to_reference
 from .diffing import build_visual_diff, resize_to_match
-from .image_io import ConversionError, cv_to_pil, decode_png, encode_png, pil_to_cv
+from .image_io import (
+    ConversionError,
+    MAX_UPLOAD_BYTES,
+    PageRangeError,
+    analyze_upload,
+    cv_to_pil,
+    decode_png,
+    encode_png,
+    pil_to_cv,
+)
 from .models import AlignmentInfo, AnalyzeResponse, DiffResponse, ImagePayload, PageInfo, RediffRequest, RediffResponse
-from .raster_cache import rasterize_upload_cached
+from .raster_cache import rasterize_upload_page_cached
 from .regions import suggest_anchor_regions
 from .result_cache import get_diff_images, store_diff_images
 
@@ -49,6 +58,7 @@ IMAGE_EXTENSIONS = {
     ".pdf",
     ".excalidraw",
 }
+READ_CHUNK_SIZE = 1024 * 1024
 
 
 @app.get("/api/health")
@@ -58,7 +68,7 @@ def health() -> dict[str, str]:
 
 @app.post("/api/attachments")
 async def upload_attachment(file: UploadFile = File(...)) -> JSONResponse:
-    content = await file.read()
+    content = await _read_upload_or_413(file)
     if not content:
         raise HTTPException(status_code=400, detail="Attachment is empty")
     deleted_expired = cleanup_expired_attachments()
@@ -76,21 +86,22 @@ async def upload_attachment(file: UploadFile = File(...)) -> JSONResponse:
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
 async def analyze(file: UploadFile = File(...)) -> AnalyzeResponse:
-    content = await file.read()
-    fmt, pages = _convert_or_400(file.filename or "upload", content)
+    content = await _read_upload_or_413(file)
+    fmt, pages = _analyze_or_400(file.filename or "upload", content)
+    warnings = _page_warnings(pages)
     return AnalyzeResponse(
         filename=file.filename or "upload",
         format=fmt,
         page_count=len(pages),
-        pages=[PageInfo(index=page.index, width=page.image.width, height=page.image.height) for page in pages],
+        pages=[PageInfo(index=page.index, width=page.width, height=page.height, warnings=list(page.warnings)) for page in pages],
+        warnings=warnings,
     )
 
 
 @app.post("/api/convert")
 async def convert(file: UploadFile = File(...), page: int = Form(0)) -> JSONResponse:
-    content = await file.read()
-    fmt, pages = _convert_or_400(file.filename or "upload", content)
-    selected = _select_page(pages, page)
+    content = await _read_upload_or_413(file)
+    fmt, selected = _convert_page_or_400(file.filename or "upload", content, page)
     return JSONResponse(
         {
             "filename": file.filename,
@@ -100,6 +111,7 @@ async def convert(file: UploadFile = File(...), page: int = Form(0)) -> JSONResp
             "height": selected.image.height,
             "image": {"mime_type": "image/png", "data": encode_png(selected.image)},
             "regions": suggest_anchor_regions(pil_to_cv(selected.image)),
+            "warnings": list(selected.warnings),
         }
     )
 
@@ -114,12 +126,10 @@ async def diff(
     diff_threshold: float = Form(0.1),
     anchor_region: str | None = Form(None),
 ) -> DiffResponse:
-    content_a = await file_a.read()
-    content_b = await file_b.read()
-    _, pages_a = _convert_or_400(file_a.filename or "a", content_a)
-    _, pages_b = _convert_or_400(file_b.filename or "b", content_b)
-    raster_a = _select_page(pages_a, page_a)
-    raster_b = _select_page(pages_b, page_b)
+    content_a = await _read_upload_or_413(file_a)
+    content_b = await _read_upload_or_413(file_b)
+    _, raster_a = _convert_page_or_400(file_a.filename or "a", content_a, page_a)
+    _, raster_b = _convert_page_or_400(file_b.filename or "b", content_b, page_b)
 
     image_a = pil_to_cv(raster_a.image)
     image_b = pil_to_cv(raster_b.image)
@@ -153,6 +163,7 @@ async def diff(
         diff_pixels=diff_result["diff_pixels"],
         diff_ratio=diff_result["diff_ratio"],
         diff_threshold=diff_result["threshold"],
+        conversion_warnings=_page_warnings([raster_a, raster_b]),
     )
 
 
@@ -206,13 +217,15 @@ async def git_diff(payload: dict) -> DiffResponse:
     if not path:
         raise HTTPException(status_code=422, detail="path is required")
     rel_path = _safe_git_path(repo, path)
+    head_path = str(payload.get("head_path") or path)
+    head_rel_path = _safe_git_path(repo, head_path)
     current_path = repo / rel_path
     if not current_path.exists() or not current_path.is_file():
         raise HTTPException(status_code=404, detail=f"Current file not found: {rel_path}")
-    previous = _git_show(repo, rel_path)
+    previous = _git_show(repo, head_rel_path)
     current = current_path.read_bytes()
     return _build_diff_response(
-        filename_a=f"HEAD:{rel_path}",
+        filename_a=f"HEAD:{head_rel_path}",
         content_a=previous,
         filename_b=rel_path,
         content_b=current,
@@ -230,19 +243,50 @@ def _decode_rediff_images(payload: RediffRequest):
         raise HTTPException(status_code=422, detail=f"Could not read diff images: {exc}") from exc
 
 
-def _convert_or_400(filename: str, content: bytes):
+async def _read_upload_or_413(file: UploadFile) -> bytes:
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            limit_mb = MAX_UPLOAD_BYTES / (1024 * 1024)
+            raise HTTPException(status_code=413, detail=f"Upload is too large; limit is {limit_mb:.0f} MB per file")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _analyze_or_400(filename: str, content: bytes):
     try:
-        return rasterize_upload_cached(filename, content)
+        return analyze_upload(filename, content)
+    except PageRangeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ConversionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Could not read {filename}: {exc}") from exc
 
 
-def _select_page(pages, index: int):
-    if index < 0 or index >= len(pages):
-        raise HTTPException(status_code=400, detail=f"Page index {index} is out of range")
-    return pages[index]
+def _convert_page_or_400(filename: str, content: bytes, page: int):
+    try:
+        return rasterize_upload_page_cached(filename, content, page=page)
+    except PageRangeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ConversionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not read {filename}: {exc}") from exc
+
+
+def _page_warnings(pages) -> list[str]:
+    warnings = []
+    for page in pages:
+        for warning in getattr(page, "warnings", ()):
+            if warning not in warnings:
+                warnings.append(warning)
+    return warnings
 
 
 def _parse_anchor_region(anchor_region: str | None) -> dict | None:
@@ -266,10 +310,8 @@ def _build_diff_response(
     category: str,
     diff_threshold: float,
 ) -> DiffResponse:
-    _, pages_a = _convert_or_400(filename_a, content_a)
-    _, pages_b = _convert_or_400(filename_b, content_b)
-    raster_a = _select_page(pages_a, 0)
-    raster_b = _select_page(pages_b, 0)
+    _, raster_a = _convert_page_or_400(filename_a, content_a, 0)
+    _, raster_b = _convert_page_or_400(filename_b, content_b, 0)
     image_a = pil_to_cv(raster_a.image)
     image_b = pil_to_cv(raster_b.image)
     alignment = align_to_reference(image_a, image_b, category=category, anchor_region=None)
@@ -301,6 +343,7 @@ def _build_diff_response(
         diff_pixels=diff_result["diff_pixels"],
         diff_ratio=diff_result["diff_ratio"],
         diff_threshold=diff_result["threshold"],
+        conversion_warnings=_page_warnings([raster_a, raster_b]),
     )
 
 
@@ -343,10 +386,11 @@ def _changed_image_files(repo: Path, folder: Path) -> list[dict]:
         entry = entries[i]
         status = entry[:2]
         path = entry[3:]
+        head_path = path
         if status.startswith("R") or status.startswith("C"):
             i += 1
             if i < len(entries):
-                path = entries[i]
+                head_path = entries[i]
         i += 1
         if Path(path).suffix.lower() not in IMAGE_EXTENSIONS:
             continue
@@ -354,6 +398,7 @@ def _changed_image_files(repo: Path, folder: Path) -> list[dict]:
         files.append(
             {
                 "path": path,
+                "head_path": head_path,
                 "status": status.strip() or "M",
                 "comparable": comparable,
                 "reason": None if comparable else "HEAD側の画像がないため比較できません",
