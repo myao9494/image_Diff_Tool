@@ -156,6 +156,8 @@ async def diff(
             matrix=alignment.matrix,
         ),
         image_a=ImagePayload(data=encode_png(cv_to_pil(comparison_a))),
+        image_a_original=ImagePayload(data=encode_png(cv_to_pil(image_a))),
+        image_b_original=ImagePayload(data=encode_png(cv_to_pil(image_b))),
         image_b_aligned=ImagePayload(data=encode_png(cv_to_pil(comparison_b))),
         overlay=ImagePayload(data=encode_png(cv_to_pil(diff_result["overlay"]))),
         mask=ImagePayload(data=encode_png(cv_to_pil(diff_result["mask"]))),
@@ -336,6 +338,8 @@ def _build_diff_response(
             matrix=alignment.matrix,
         ),
         image_a=ImagePayload(data=encode_png(cv_to_pil(comparison_a))),
+        image_a_original=ImagePayload(data=encode_png(cv_to_pil(image_a))),
+        image_b_original=ImagePayload(data=encode_png(cv_to_pil(image_b))),
         image_b_aligned=ImagePayload(data=encode_png(cv_to_pil(comparison_b))),
         overlay=ImagePayload(data=encode_png(cv_to_pil(diff_result["overlay"]))),
         mask=ImagePayload(data=encode_png(cv_to_pil(diff_result["mask"]))),
@@ -460,6 +464,14 @@ def serve_frontend() -> FileResponse:
     if not index.exists():
         raise HTTPException(status_code=404, detail="frontend/dist/index.html not found. Run npm run build in frontend.")
     return FileResponse(index)
+
+
+@app.get("/{filename}", include_in_schema=False)
+def serve_frontend_file(filename: str) -> FileResponse:
+    path = DIST_DIR / filename
+    if path.exists() and path.is_file():
+        return FileResponse(path)
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 @app.get("/{path:path}", include_in_schema=False)

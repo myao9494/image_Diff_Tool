@@ -3,7 +3,7 @@
  *
  * ユーザーが2つの画像（またはPDF/TIFF等）を選択し、
  * バックエンドのAPIに送信して差分比較を行うための機能を提供する。
- * 比較結果は「補正B」「差分」「マスク」の各ビューで切り替えて表示できる。
+ * 比較結果は「元画像」「補正B」「差分」「マスク」の各ビューで切り替えて表示できる。
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -31,13 +31,28 @@ import "./styles.css";
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 const CATEGORIES = ["汎用", "図面", "グラフ", "書類"];
 const VIEWS = [
+  { id: "original", label: "元画像" },
   { id: "aligned", label: "補正B" },
   { id: "overlay", label: "差分" },
   { id: "mask", label: "マスク" },
 ];
+const TAB_TOGGLE_VIEWS = ["aligned", "overlay"];
 const MEMO_DB_NAME = "visual-diff-memo";
 const MEMO_DB_STORE = "payloads";
 const MEMO_STORAGE_KEY = "visual-diff-memo-fallback";
+const CLIPBOARD_IMAGE_SCALE = 2;
+const MEMO_DEFAULTS = {
+  text: "めも",
+  opacity: 60,
+  fontSize: 15,
+  width: 180,
+  height: 52,
+  autoSize: true,
+  leaderX: 18,
+  leaderY: 46,
+  leaderEndX: -73,
+  leaderEndY: 163,
+};
 
 function App() {
   const [activeTab, setActiveTab] = useState("files");
@@ -68,16 +83,24 @@ function App() {
   const comparableGitFiles = useMemo(() => (gitInfo?.files ?? []).filter((file) => file.comparable), [gitInfo]);
   const currentGitFile = comparableGitFiles[gitIndex] ?? null;
   const activeResult = activeTab === "git" ? gitResult : result;
+  const leftPreviewImage = left?.preview ? toDataUri(left.preview) : null;
+  const rightPreviewImage = right?.preview ? toDataUri(right.preview) : null;
   const rightImage = useMemo(() => {
     if (!activeResult) return null;
+    if (view === "original") return toDataUri(activeResult.image_b_original ?? activeResult.image_b_aligned);
     if (view === "aligned") return toDataUri(activeResult.image_b_aligned);
     if (view === "mask") return toDataUri(activeResult.mask);
     return toDataUri(activeResult.overlay);
   }, [activeResult, view]);
-  const leftPreviewImage = left?.preview ? toDataUri(left.preview) : null;
-  const rightPreviewImage = right?.preview ? toDataUri(right.preview) : null;
+  const leftImage = useMemo(() => {
+    if (!activeResult) return activeTab === "git" ? null : leftPreviewImage;
+    if (view === "original") return toDataUri(activeResult.image_a_original ?? activeResult.image_a);
+    return toDataUri(activeResult.image_a);
+  }, [activeResult, activeTab, leftPreviewImage, view]);
   const rightPaneTitle = activeResult
-    ? view === "overlay"
+    ? view === "original"
+      ? "B 元画像"
+      : view === "overlay"
       ? "差分オーバーレイ"
       : view === "mask"
         ? "差分マスク"
@@ -192,6 +215,22 @@ function App() {
     window.addEventListener("keydown", handleGitKeys);
     return () => window.removeEventListener("keydown", handleGitKeys);
   }, [activeTab, gitIndex, comparableGitFiles]);
+
+  useEffect(() => {
+    function handleResultViewKeys(event) {
+      if (!activeResult || isTypingTarget(event.target) || event.key !== "Tab") return;
+      event.preventDefault();
+      setView((currentView) => {
+        const currentIndex = TAB_TOGGLE_VIEWS.indexOf(currentView);
+        if (event.shiftKey) {
+          return currentIndex === 0 ? TAB_TOGGLE_VIEWS[1] : TAB_TOGGLE_VIEWS[0];
+        }
+        return currentIndex === 1 ? TAB_TOGGLE_VIEWS[0] : TAB_TOGGLE_VIEWS[1];
+      });
+    }
+    window.addEventListener("keydown", handleResultViewKeys);
+    return () => window.removeEventListener("keydown", handleResultViewKeys);
+  }, [activeResult]);
 
   function selectCategory(nextCategory) {
     setCategory(nextCategory);
@@ -329,6 +368,7 @@ function App() {
               onActivate={setActiveSide}
               onPasteImage={pasteImage}
               onFile={(file) => loadFile("left", file)}
+              onDropFile={(file) => loadFile("left", file)}
             />
             <FilePicker
               label="B"
@@ -340,6 +380,7 @@ function App() {
               onActivate={setActiveSide}
               onPasteImage={pasteImage}
               onFile={(file) => loadFile("right", file)}
+              onDropFile={(file) => loadFile("right", file)}
             />
             <button className="primary" disabled={!canCompare || busy} onClick={() => compare()}>
               {busy ? <Loader2 className="spin" size={18} /> : <ScanSearch size={18} />}
@@ -449,13 +490,14 @@ function App() {
           side="left"
           active={activeSide === "left"}
           subtitle={activeTab === "git" ? currentGitFile?.path : left?.file?.name}
-          image={activeResult ? toDataUri(activeResult.image_a) : activeTab === "git" ? null : leftPreviewImage}
+          image={leftImage}
           zoom={zoom}
-          regions={activeTab === "git" ? [] : left?.regions ?? []}
+          regions={activeTab === "git" || (activeResult && view !== "original") ? [] : left?.regions ?? []}
           selectedRegion={anchorRegion}
           onSelectRegion={selectAnchorRegion}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
+          onDropFile={(file) => loadFile("left", file)}
         />
         <ImagePane
           title={rightPaneTitle}
@@ -468,6 +510,7 @@ function App() {
           selectedRegion={null}
           onActivate={setActiveSide}
           onPasteImage={pasteImage}
+          onDropFile={(file) => loadFile("right", file)}
         />
       </section>
     </main>
@@ -602,8 +645,10 @@ function MemoDiffApp() {
   const [notice, setNotice] = useState("");
   const stageRef = useRef(null);
   const dragRef = useRef(null);
+  const leaderDragRef = useRef(null);
   const sliderDragRef = useRef(false);
   const safeNotes = normalizeMemoNotes(notes);
+  const selectedNote = safeNotes.find((note) => note.id === selectedNoteId) ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -640,6 +685,15 @@ function MemoDiffApp() {
       if (sliderDragRef.current) {
         updateSliderFromPointer(event);
       }
+      if (leaderDragRef.current) {
+        const { id, rect, point } = leaderDragRef.current;
+        const x = clamp(event.clientX - rect.left, -420, 620);
+        const y = clamp(event.clientY - rect.top, -240, 520);
+        const start = snapMemoLeaderPoint({ x, y }, { width: rect.width, height: rect.height });
+        const fields = point === "end" ? { leaderEndX: x, leaderEndY: y } : { leaderX: start.x, leaderY: start.y };
+        setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === id ? { ...item, ...fields } : item)));
+        return;
+      }
       if (!dragRef.current || !stageRef.current) return;
       const draggedNoteId = dragRef.current.id;
       const { offsetX, offsetY } = dragRef.current;
@@ -650,6 +704,7 @@ function MemoDiffApp() {
     }
     function stopDrag() {
       dragRef.current = null;
+      leaderDragRef.current = null;
       sliderDragRef.current = false;
     }
     window.addEventListener("pointermove", moveNote);
@@ -676,7 +731,7 @@ function MemoDiffApp() {
 
   function addNote() {
     const id = crypto.randomUUID?.() ?? String(Date.now());
-    const next = { id, text: "めも", x: 42, y: 12 };
+    const next = { id, ...MEMO_DEFAULTS, x: 42, y: 12 };
     setNotes((items) => [...normalizeMemoNotes(items), next]);
     setSelectedNoteId(id);
   }
@@ -685,21 +740,34 @@ function MemoDiffApp() {
     setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === id ? { ...item, text } : item)));
   }
 
+  function updateNoteFields(id, fields) {
+    setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === id ? { ...item, ...fields } : item)));
+  }
+
   function deleteNote(id) {
     setNotes((items) => normalizeMemoNotes(items).filter((item) => item.id !== id));
     setSelectedNoteId((current) => (current === id ? null : current));
   }
 
   function startDrag(event, note) {
-    if (event.target.tagName === "BUTTON") return;
+    if (event.target.closest("button, input, .memo-leader-handle")) return;
     const rect = event.currentTarget.getBoundingClientRect();
     dragRef.current = { id: note.id, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
     setSelectedNoteId(note.id);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
+  function startLeaderDrag(event, note, point) {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.closest(".memo-note")?.getBoundingClientRect();
+    if (!rect) return;
+    leaderDragRef.current = { id: note.id, rect, point };
+    setSelectedNoteId(note.id);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
   function startSliderDrag(event) {
-    if (event.target.closest(".memo-note")) return;
     sliderDragRef.current = true;
     updateSliderFromPointer(event);
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -711,11 +779,23 @@ function MemoDiffApp() {
     setSlider(Math.round(clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100)));
   }
 
+  function zoomMemoWithWheel(event) {
+    if (!event.ctrlKey && !event.metaKey && !event.altKey) return;
+    if (event.target.closest("textarea, input, button, select")) return;
+    event.preventDefault();
+    const direction = event.deltaY < 0 ? 1 : -1;
+    setMemoZoom((current) => clamp(current + direction * 5, 50, 300));
+  }
+
   async function copyMemoImage(side) {
     try {
-      await copyImageWithNotes(side === "a" ? imageA : imageB, safeNotes, getMemoStageSize());
+      if (side === "pair") {
+        await copySideBySideImageWithNotes(imageA, imageB, safeNotes, getMemoStageSize());
+      } else {
+        await copyImageWithNotes(side === "a" ? imageA : imageB, safeNotes, getMemoStageSize());
+      }
       setContextMenu(null);
-      setNotice(`画像${side.toUpperCase()}をメモ付きでクリップボードに保存しました`);
+      setNotice(side === "pair" ? "元データ / 変更後を左右配置でクリップボードに保存しました" : `画像${side.toUpperCase()}をメモ付きでクリップボードに保存しました`);
       window.setTimeout(() => setNotice(""), 2400);
     } catch (err) {
       setContextMenu(null);
@@ -752,44 +832,176 @@ function MemoDiffApp() {
         </label>
         <label className="control slider-control">
           <span>表示サイズ {memoZoom}%</span>
-          <input type="range" min="50" max="150" value={memoZoom} onChange={(event) => setMemoZoom(Number(event.target.value))} />
+          <input type="range" min="50" max="300" value={memoZoom} onChange={(event) => setMemoZoom(Number(event.target.value))} />
         </label>
         {notice && <span className="copy-notice">{notice}</span>}
       </section>
 
-      <section className="memo-stage-wrap">
-        <div className="memo-stage" ref={stageRef} style={{ width: `min(${memoZoom}%, 1280px)` }} onPointerDown={startSliderDrag}>
+      {selectedNote && (
+        <section className="memo-editor" aria-label="選択中メモの編集">
+          <label className="control memo-text-control">
+            <span>メモ本文</span>
+            <textarea value={selectedNote.text} onChange={(event) => updateNote(selectedNote.id, event.target.value)} />
+          </label>
+          <label className="control compact-control">
+            <span>メモ透過率 {selectedNote.opacity}%</span>
+            <input
+              type="range"
+              min="20"
+              max="100"
+              value={selectedNote.opacity}
+              onChange={(event) => updateNoteFields(selectedNote.id, { opacity: Number(event.target.value) })}
+            />
+          </label>
+          <label className="control compact-control">
+            <span>文字サイズ {selectedNote.fontSize}px</span>
+            <input
+              type="range"
+              min="12"
+              max="48"
+              value={selectedNote.fontSize}
+              onChange={(event) => updateNoteFields(selectedNote.id, { fontSize: Number(event.target.value) })}
+            />
+          </label>
+          <label className="check-control">
+            <input
+              type="checkbox"
+              checked={selectedNote.autoSize}
+              onChange={(event) => updateNoteFields(selectedNote.id, { autoSize: event.target.checked })}
+            />
+            <span>文字数に合わせて自動調整</span>
+          </label>
+          <label className="control number-control">
+            <span>幅</span>
+            <input
+              type="number"
+              min="100"
+              max="520"
+              value={selectedNote.width}
+              disabled={selectedNote.autoSize}
+              onChange={(event) => updateNoteFields(selectedNote.id, { width: clamp(Number(event.target.value), 100, 520) })}
+            />
+          </label>
+          <label className="control number-control">
+            <span>高さ</span>
+            <input
+              type="number"
+              min="44"
+              max="320"
+              value={selectedNote.height}
+              disabled={selectedNote.autoSize}
+              onChange={(event) => updateNoteFields(selectedNote.id, { height: clamp(Number(event.target.value), 44, 320) })}
+            />
+          </label>
+          <label className="control number-control">
+            <span>起点X</span>
+            <input
+              type="number"
+              min="-420"
+              max="620"
+              value={Math.round(memoLeaderStart(selectedNote).x)}
+              onChange={(event) => {
+                const start = snapMemoLeaderPoint({ x: Number(event.target.value), y: selectedNote.leaderY }, memoSize(selectedNote));
+                updateNoteFields(selectedNote.id, { leaderX: start.x, leaderY: start.y });
+              }}
+            />
+          </label>
+          <label className="control number-control">
+            <span>起点Y</span>
+            <input
+              type="number"
+              min="-240"
+              max="520"
+              value={Math.round(memoLeaderStart(selectedNote).y)}
+              onChange={(event) => {
+                const start = snapMemoLeaderPoint({ x: selectedNote.leaderX, y: Number(event.target.value) }, memoSize(selectedNote));
+                updateNoteFields(selectedNote.id, { leaderX: start.x, leaderY: start.y });
+              }}
+            />
+          </label>
+          <label className="control number-control">
+            <span>終点X</span>
+            <input
+              type="number"
+              min="-420"
+              max="620"
+              value={Math.round(selectedNote.leaderEndX)}
+              onChange={(event) => updateNoteFields(selectedNote.id, { leaderEndX: clamp(Number(event.target.value), -420, 620) })}
+            />
+          </label>
+          <label className="control number-control">
+            <span>終点Y</span>
+            <input
+              type="number"
+              min="-240"
+              max="520"
+              value={Math.round(selectedNote.leaderEndY)}
+              onChange={(event) => updateNoteFields(selectedNote.id, { leaderEndY: clamp(Number(event.target.value), -240, 520) })}
+            />
+          </label>
+        </section>
+      )}
+
+      <section className="memo-stage-wrap" onWheel={zoomMemoWithWheel}>
+        <div className="memo-stage" ref={stageRef} style={{ width: `min(${memoZoom}%, 1280px)` }}>
           <img className="memo-image memo-image-a" src={imageA} alt="画像A" draggable="false" />
           <div className="memo-image-b-clip" style={{ clipPath: `inset(0 0 0 ${slider}%)` }}>
             <img className="memo-image" src={imageB} alt="画像B" draggable="false" />
           </div>
-          <div className="comparison-handle" style={{ left: `${slider}%` }}>
+          <div className="comparison-handle" style={{ left: `${slider}%` }} onPointerDown={startSliderDrag}>
             <span>A</span>
             <span>B</span>
           </div>
-          {safeNotes.map((note) => (
-            <div
-              key={note.id}
-              className={`memo-note ${selectedNoteId === note.id ? "selected" : ""}`}
-              style={{ left: `${note.x}%`, top: `${note.y}%` }}
-              onPointerDown={(event) => startDrag(event, note)}
-            >
-              <textarea
-                value={note.text}
-                aria-label="メモ本文"
-                onFocus={() => setSelectedNoteId(note.id)}
-                onChange={(event) => updateNote(note.id, event.target.value)}
-              />
-              <button title="メモ削除" onClick={() => deleteNote(note.id)}>
-                <X size={14} />
-              </button>
-            </div>
-          ))}
+          {safeNotes.map((note) => {
+            const leaderStart = memoLeaderStart(note);
+            return (
+              <div
+                key={note.id}
+                className={`memo-note ${selectedNoteId === note.id ? "selected" : ""}`}
+                style={{
+                  ...memoBoxStyle(note),
+                  left: `${note.x}%`,
+                  top: `${note.y}%`,
+                  "--memo-alpha": note.opacity / 100,
+                  "--memo-font-size": `${note.fontSize}px`,
+                }}
+                onPointerDown={(event) => startDrag(event, note)}
+              >
+                <svg className="memo-leader" viewBox="-420 -240 1040 760" aria-hidden="true">
+                  <line x1={leaderStart.x} y1={leaderStart.y} x2={note.leaderEndX} y2={note.leaderEndY} />
+                </svg>
+                <button
+                  type="button"
+                  className="memo-leader-handle"
+                  title="引出線の起点をドラッグ"
+                  style={{ left: `${leaderStart.x}px`, top: `${leaderStart.y}px` }}
+                  onPointerDown={(event) => startLeaderDrag(event, note, "start")}
+                />
+                <button
+                  type="button"
+                  className="memo-leader-handle end"
+                  title="引出線の終点をドラッグ"
+                  style={{ left: `${note.leaderEndX}px`, top: `${note.leaderEndY}px` }}
+                  onPointerDown={(event) => startLeaderDrag(event, note, "end")}
+                />
+                <textarea
+                  value={note.text}
+                  aria-label="メモ本文"
+                  onFocus={() => setSelectedNoteId(note.id)}
+                  onChange={(event) => updateNote(note.id, event.target.value)}
+                />
+                <button className="memo-delete" title="メモ削除" onClick={() => deleteNote(note.id)}>
+                  <X size={14} />
+                </button>
+              </div>
+            );
+          })}
         </div>
       </section>
 
       {contextMenu && (
         <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+          <button onClick={() => copyMemoImage("pair")}>元データ / 変更後を左右配置でコピー</button>
           <button onClick={() => copyMemoImage("a")}>画像Aをメモ付きでクリップボードに保存</button>
           <button onClick={() => copyMemoImage("b")}>画像Bをメモ付きでクリップボードに保存</button>
         </div>
@@ -798,16 +1010,36 @@ function MemoDiffApp() {
   );
 }
 
-function FilePicker({ label, side, active, data, page, setPage, onFile, onActivate, onPasteImage }) {
+function FilePicker({ label, side, active, data, page, setPage, onFile, onActivate, onPasteImage, onDropFile }) {
   const pages = data?.metadata?.pages ?? [];
   const pasted = Boolean(data?.attachment);
+  const [dragging, setDragging] = useState(false);
+
+  function handleDrop(event) {
+    event.preventDefault();
+    setDragging(false);
+    onActivate(side);
+    const file = firstDroppedFile(event.dataTransfer);
+    if (file) onDropFile(file);
+  }
+
   return (
     <div
-      className={`file-picker ${active ? "active" : ""}`}
+      className={`file-picker ${active ? "active" : ""} ${dragging ? "dragging" : ""}`}
       tabIndex={0}
       onFocus={() => onActivate(side)}
       onClick={() => onActivate(side)}
       onPaste={(event) => onPasteImage(side, event)}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setDragging(true);
+        onActivate(side);
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false);
+      }}
+      onDrop={handleDrop}
     >
       <label className="upload">
         <ImageUp size={18} />
@@ -831,7 +1063,7 @@ function FilePicker({ label, side, active, data, page, setPage, onFile, onActiva
         <small>
           {data
             ? `${data.metadata.format.toUpperCase()} / ${data.metadata.page_count} page${pasted ? " / 添付保存済み" : ""}`
-            : "ファイル選択または貼り付け"}
+            : "選択 / ドロップ / 貼り付け"}
         </small>
       </div>
       <label className="page-select">
@@ -860,22 +1092,44 @@ function ImagePane({
   onSelectRegion,
   onActivate,
   onPasteImage,
+  onDropFile,
 }) {
   const [imageSize, setImageSize] = useState(null);
   useEffect(() => {
     setImageSize(null);
   }, [image]);
+
+  const [dragging, setDragging] = useState(false);
+
+  function handleDrop(event) {
+    event.preventDefault();
+    setDragging(false);
+    onActivate(side);
+    const file = firstDroppedFile(event.dataTransfer);
+    if (file) onDropFile?.(file);
+  }
+
   return (
     <article
-      className={`pane ${active ? "active" : ""}`}
+      className={`pane ${active ? "active" : ""} ${dragging ? "dragging" : ""}`}
       tabIndex={0}
       onFocus={() => onActivate(side)}
       onClick={() => onActivate(side)}
       onPaste={(event) => onPasteImage(side, event)}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setDragging(true);
+        onActivate(side);
+      }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false);
+      }}
+      onDrop={handleDrop}
     >
       <div className="pane-title">
         <strong>{title}</strong>
-        <span>{subtitle ?? "クリックしてcmd+V"}</span>
+        <span>{subtitle ?? "クリックしてcmd+V / ドロップ"}</span>
       </div>
       <div className="canvas">
         {image ? (
@@ -966,6 +1220,10 @@ function imageFileFromClipboard(clipboardData) {
   const extension = extensionForMime(blob.type);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   return new File([blob], `clipboard-${timestamp}.${extension}`, { type: blob.type || "image/png" });
+}
+
+function firstDroppedFile(dataTransfer) {
+  return Array.from(dataTransfer?.files ?? []).find((file) => file.size > 0) ?? null;
 }
 
 function extensionForMime(mimeType) {
@@ -1075,10 +1333,61 @@ function normalizeMemoNotes(notes) {
     .filter((note) => note && typeof note === "object")
     .map((note, index) => ({
       id: note.id ? String(note.id) : `recovered-${Date.now()}-${index}`,
-      text: typeof note.text === "string" ? note.text : "めも",
+      text: typeof note.text === "string" ? note.text : MEMO_DEFAULTS.text,
       x: Number.isFinite(Number(note.x)) ? clamp(Number(note.x), 0, 88) : 42,
       y: Number.isFinite(Number(note.y)) ? clamp(Number(note.y), 0, 82) : 12,
+      opacity: Number.isFinite(Number(note.opacity)) ? clamp(Number(note.opacity), 20, 100) : MEMO_DEFAULTS.opacity,
+      fontSize: Number.isFinite(Number(note.fontSize)) ? clamp(Number(note.fontSize), 12, 48) : MEMO_DEFAULTS.fontSize,
+      width: Number.isFinite(Number(note.width)) ? clamp(Number(note.width), 100, 520) : MEMO_DEFAULTS.width,
+      height: Number.isFinite(Number(note.height)) ? clamp(Number(note.height), 44, 320) : MEMO_DEFAULTS.height,
+      autoSize: typeof note.autoSize === "boolean" ? note.autoSize : MEMO_DEFAULTS.autoSize,
+      leaderX: Number.isFinite(Number(note.leaderX)) ? clamp(Number(note.leaderX), -420, 620) : MEMO_DEFAULTS.leaderX,
+      leaderY: Number.isFinite(Number(note.leaderY)) ? clamp(Number(note.leaderY), -240, 520) : MEMO_DEFAULTS.leaderY,
+      leaderEndX: Number.isFinite(Number(note.leaderEndX)) ? clamp(Number(note.leaderEndX), -420, 620) : MEMO_DEFAULTS.leaderEndX,
+      leaderEndY: Number.isFinite(Number(note.leaderEndY)) ? clamp(Number(note.leaderEndY), -240, 520) : MEMO_DEFAULTS.leaderEndY,
     }));
+}
+
+function memoBoxStyle(note) {
+  const size = memoSize(note);
+  return {
+    width: `${size.width}px`,
+    height: `${size.height}px`,
+  };
+}
+
+function memoSize(note) {
+  return note.autoSize ? calculateMemoAutoSize(note) : { width: note.width, height: note.height };
+}
+
+function memoLeaderStart(note) {
+  return snapMemoLeaderPoint({ x: note.leaderX, y: note.leaderY }, memoSize(note));
+}
+
+function snapMemoLeaderPoint(point, size) {
+  const x = clamp(point.x, 0, size.width);
+  const y = clamp(point.y, 0, size.height);
+  const distances = [
+    { edge: "left", value: x },
+    { edge: "right", value: size.width - x },
+    { edge: "top", value: y },
+    { edge: "bottom", value: size.height - y },
+  ];
+  const nearest = distances.reduce((best, item) => (item.value < best.value ? item : best), distances[0]).edge;
+  if (nearest === "left") return { x: 0, y };
+  if (nearest === "right") return { x: size.width, y };
+  if (nearest === "top") return { x, y: 0 };
+  return { x, y: size.height };
+}
+
+function calculateMemoAutoSize(note) {
+  const lines = String(note.text || MEMO_DEFAULTS.text).split("\n");
+  const longestLine = Math.max(...lines.map((line) => Array.from(line || " ").length), 1);
+  const width = clamp(Math.round(longestLine * note.fontSize * 0.72 + 34), 120, 420);
+  const usableChars = Math.max(1, Math.floor((width - 28) / (note.fontSize * 0.72)));
+  const lineCount = lines.reduce((total, line) => total + Math.max(1, Math.ceil(Array.from(line || " ").length / usableChars)), 0);
+  const height = clamp(Math.round(lineCount * note.fontSize * 1.18 + 24), 44, 260);
+  return { width, height };
 }
 
 async function copyImageWithNotes(imageSrc, notes, stageSize = null) {
@@ -1087,14 +1396,73 @@ async function copyImageWithNotes(imageSrc, notes, stageSize = null) {
   }
   const image = await loadImage(imageSrc);
   const canvas = document.createElement("canvas");
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
+  canvas.width = image.naturalWidth * CLIPBOARD_IMAGE_SCALE;
+  canvas.height = image.naturalHeight * CLIPBOARD_IMAGE_SCALE;
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(image, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
   drawNotes(ctx, notes, canvas.width, canvas.height, stageSize);
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("メモ付き画像を作成できませんでした");
   await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+}
+
+async function copySideBySideImageWithNotes(imageASrc, imageBSrc, notes, stageSize = null) {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    throw new Error("このブラウザでは画像のクリップボード保存に対応していません");
+  }
+  const [imageA, imageB] = await Promise.all([loadImage(imageASrc), loadImage(imageBSrc)]);
+  const padding = 24;
+  const gap = 24;
+  const labelHeight = 56;
+  const imageTop = padding + labelHeight;
+  const scaledPadding = padding * CLIPBOARD_IMAGE_SCALE;
+  const scaledGap = gap * CLIPBOARD_IMAGE_SCALE;
+  const scaledLabelHeight = labelHeight * CLIPBOARD_IMAGE_SCALE;
+  const scaledImageTop = imageTop * CLIPBOARD_IMAGE_SCALE;
+  const imageAWidth = imageA.naturalWidth * CLIPBOARD_IMAGE_SCALE;
+  const imageAHeight = imageA.naturalHeight * CLIPBOARD_IMAGE_SCALE;
+  const imageBWidth = imageB.naturalWidth * CLIPBOARD_IMAGE_SCALE;
+  const imageBHeight = imageB.naturalHeight * CLIPBOARD_IMAGE_SCALE;
+  const canvas = document.createElement("canvas");
+  canvas.width = scaledPadding * 2 + imageAWidth + scaledGap + imageBWidth;
+  canvas.height = scaledPadding * 2 + scaledLabelHeight + Math.max(imageAHeight, imageBHeight);
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  const leftX = scaledPadding;
+  const rightX = scaledPadding + imageAWidth + scaledGap;
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  drawCopyPanelLabel(ctx, "元データ", leftX, scaledPadding, imageAWidth, scaledLabelHeight);
+  drawCopyPanelLabel(ctx, "変更後", rightX, scaledPadding, imageBWidth, scaledLabelHeight);
+  ctx.drawImage(imageA, leftX, scaledImageTop, imageAWidth, imageAHeight);
+  ctx.drawImage(imageB, rightX, scaledImageTop, imageBWidth, imageBHeight);
+  ctx.save();
+  ctx.translate(rightX, scaledImageTop);
+  drawNotes(ctx, notes, imageBWidth, imageBHeight, stageSize);
+  ctx.restore();
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("左右配置の画像を作成できませんでした");
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+}
+
+function drawCopyPanelLabel(ctx, label, x, y, width, height) {
+  ctx.save();
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, width, height);
+  ctx.fillStyle = "#0f172a";
+  ctx.font = `700 ${Math.max(24, Math.round(height * 0.43))}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, x + width / 2, y + height / 2);
+  ctx.restore();
 }
 
 function drawNotes(ctx, notes, width, height, stageSize = null) {
@@ -1103,22 +1471,23 @@ function drawNotes(ctx, notes, width, height, stageSize = null) {
     const scale = stageSize?.width ? width / stageSize.width : Math.max(1, Math.min(width, height) / 900);
     const x = (note.x / 100) * width;
     const y = (note.y / 100) * height;
+    const noteSize = memoSize(note);
+    const leaderStart = memoLeaderStart(note);
     ctx.save();
-    ctx.font = `700 ${24 * scale}px sans-serif`;
-    const labelWidth = 180 * scale;
+    ctx.font = `700 ${note.fontSize * scale}px sans-serif`;
+    const labelWidth = noteSize.width * scale;
     const lines = wrapCanvasText(ctx, text, labelWidth - 28 * scale);
-    const labelHeight = Math.max(52 * scale, (lines.length * 28 + 24) * scale);
-    const leaderStartX = x + 18 * scale;
-    const leaderStartY = y + 46 * scale;
-    const leaderAngle = (128 * Math.PI) / 180;
-    const leaderLength = 148 * scale;
-    ctx.fillStyle = "#ff1d14";
-    ctx.strokeStyle = "#ff1d14";
+    const labelHeight = noteSize.height * scale;
+    const leaderStartX = x + leaderStart.x * scale;
+    const leaderStartY = y + leaderStart.y * scale;
+    const memoAlpha = note.opacity / 100;
+    ctx.fillStyle = `rgba(255, 29, 20, ${memoAlpha})`;
+    ctx.strokeStyle = `rgba(255, 29, 20, ${memoAlpha})`;
     ctx.lineWidth = 6 * scale;
     ctx.lineCap = "butt";
     ctx.beginPath();
     ctx.moveTo(leaderStartX, leaderStartY);
-    ctx.lineTo(leaderStartX + Math.cos(leaderAngle) * leaderLength, leaderStartY + Math.sin(leaderAngle) * leaderLength);
+    ctx.lineTo(x + note.leaderEndX * scale, y + note.leaderEndY * scale);
     ctx.stroke();
     roundedRect(ctx, x, y, labelWidth, labelHeight, 10 * scale);
     ctx.fill();
@@ -1126,7 +1495,7 @@ function drawNotes(ctx, notes, width, height, stageSize = null) {
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     lines.forEach((line, index) => {
-      ctx.fillText(line, x + labelWidth / 2, y + 13 * scale + index * 28 * scale, labelWidth - 24 * scale);
+      ctx.fillText(line, x + labelWidth / 2, y + 12 * scale + index * note.fontSize * 1.18 * scale, labelWidth - 24 * scale);
     });
     ctx.restore();
   });
