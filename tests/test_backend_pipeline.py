@@ -32,6 +32,12 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertIn("text/html", response.headers["content-type"])
         self.assertIn("Visual Diff Tool", response.text)
 
+    def test_serves_api_guide_route(self):
+        response = self.client.get("/api-guide")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers["content-type"])
+        self.assertIn("Visual Diff Tool", response.text)
+
     def test_analyze_png(self):
         with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as image:
             response = self.client.post("/api/analyze", files={"file": ("gear_a.png", image, "image/png")})

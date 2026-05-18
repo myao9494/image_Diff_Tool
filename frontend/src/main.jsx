@@ -9,14 +9,17 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
+  BookOpenText,
   ChevronLeft,
   ChevronRight,
   Clipboard,
+  ExternalLink,
   FolderGit2,
   FolderOpen,
   ImageUp,
   Layers,
   Loader2,
+  Menu,
   MessageSquarePlus,
   MousePointer2,
   PanelTopOpen,
@@ -55,6 +58,7 @@ const MEMO_DEFAULTS = {
 };
 
 function App() {
+  const [menuOpen, setMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("files");
   const [left, setLeft] = useState(null);
   const [right, setRight] = useState(null);
@@ -342,6 +346,27 @@ function App() {
           <h1>Visual Diff Tool</h1>
           <p>PNG / SVG / PDF / TIFF / Excalidraw</p>
         </div>
+        <div className="header-menu">
+          <button className="menu-button" type="button" aria-label="メニュー" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>
+            <Menu size={22} />
+          </button>
+          {menuOpen && (
+            <div className="hamburger-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  window.open("/api-guide", "_blank", "noopener,noreferrer");
+                }}
+              >
+                <BookOpenText size={18} />
+                APIエンドポイント説明
+                <ExternalLink size={16} />
+              </button>
+            </div>
+          )}
+        </div>
       </header>
 
       <nav className="mode-tabs" aria-label="diff mode">
@@ -568,6 +593,248 @@ function App() {
       setGitResult(nextResult);
     }
   }
+}
+
+function ApiGuideApp() {
+  return (
+    <main className="api-guide-page">
+      <header className="api-guide-header">
+        <div>
+          <h1>Visual Diff Tool API Guide</h1>
+          <p>外部アプリやAIエージェントが本アプリのAPIを呼び出すための実装仕様</p>
+        </div>
+        <a className="primary secondary api-guide-openapi" href="/docs" target="_blank" rel="noreferrer">
+          <ExternalLink size={18} />
+          FastAPI docs
+        </a>
+      </header>
+
+      <section className="api-guide-content">
+        <ApiGuideSection title="基本情報">
+          <ul>
+            <li>Application Base URL: <code>http://127.0.0.1:8078/</code></li>
+            <li>API Base URL: <code>http://127.0.0.1:8078/api</code>。各エンドポイントはこのURLに <code>/health</code>, <code>/diff</code> などを連結して呼び出す。</li>
+            <li>画像データはレスポンス内で <code>{"{ mime_type: \"image/png\", data: \"...\" }"}</code> の形で返る。<code>data</code> は data URI prefix を含まないPNGのBase64文字列。</li>
+            <li>アップロード上限は1ファイルあたりバックエンド設定の <code>MAX_UPLOAD_BYTES</code> に従う。上限超過時は <code>413</code>。</li>
+            <li>対応入力形式: PNG, JPG/JPEG, WebP, BMP, GIF, TIFF/TIF, SVG, PDF, Excalidraw。</li>
+            <li>ページ番号は0始まり。PDF/TIFFなど複数ページ形式は <code>/analyze</code> でページ一覧を取得し、選択したページを <code>page</code>, <code>page_a</code>, <code>page_b</code> に指定する。</li>
+            <li>エラーは主に <code>{"{ detail: \"message\" }"}</code> 形式で返る。クライアントはHTTPステータスと <code>detail</code> を表示またはログ化する。</li>
+          </ul>
+        </ApiGuideSection>
+
+        <ApiEndpoint
+          method="GET"
+          path="/api/health"
+          purpose="バックエンドが起動してAPIを受け付けられるか確認する。"
+          request="リクエストボディなし。"
+          response={`{ "status": "ok" }`}
+          notes="外部アプリは初期化時にこのエンドポイントを呼び、200以外ならAPI未起動として扱う。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/analyze"
+          purpose="アップロードファイルの形式、ページ数、各ページのサイズ、変換時の注意を取得する。比較前の事前検査に使う。"
+          request={`Content-Type: multipart/form-data
+file: 対象ファイル`}
+          response={`{
+  "filename": "drawing.pdf",
+  "format": "pdf",
+  "page_count": 2,
+  "pages": [
+    { "index": 0, "width": 1240, "height": 1754, "warnings": [] }
+  ],
+  "warnings": []
+}`}
+          notes="Excalidrawでは未対応表現がwarningsに入る。UIや外部アプリは警告をユーザーに見せるとよい。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/convert"
+          purpose="指定ページをPNG相当にラスタライズし、プレビュー画像と基準領域候補を取得する。"
+          request={`Content-Type: multipart/form-data
+file: 対象ファイル
+page: 0始まりのページ番号。省略時は0`}
+          response={`{
+  "filename": "drawing.svg",
+  "format": "svg",
+  "page": 0,
+  "width": 800,
+  "height": 600,
+  "image": { "mime_type": "image/png", "data": "base64..." },
+  "regions": [
+    { "x": 10, "y": 20, "width": 300, "height": 200, "label": "枠線候補" }
+  ],
+  "warnings": []
+}`}
+          notes="regionsは後続の/api/diffでanchor_regionとして使える。画像表示時は data:image/png;base64, をprefixとして付ける。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/diff"
+          purpose="2つのファイルを指定ページで比較し、位置合わせ済み画像、差分オーバーレイ、マスク、差分矩形、差分率を返す。"
+          request={`Content-Type: multipart/form-data
+file_a: 基準ファイル
+file_b: 比較対象ファイル
+page_a: 基準ファイルのページ番号。省略時0
+page_b: 比較対象ファイルのページ番号。省略時0
+category: 汎用 | 図面 | グラフ | 書類。省略時 汎用
+diff_threshold: 0.0から1.0の差分しきい値。省略時0.1
+anchor_region: 任意。JSON文字列。例 {"x":0,"y":0,"width":800,"height":600,"label":"全体枠候補"}`}
+          response={`{
+  "result_id": "cache-id",
+  "page_a": 0,
+  "page_b": 0,
+  "category": "図面",
+  "width": 800,
+  "height": 600,
+  "alignment": {
+    "success": true,
+    "method": "ORB homography",
+    "warning": null,
+    "matches": 120,
+    "inliers": 88,
+    "matrix": [[1,0,0],[0,1,0],[0,0,1]]
+  },
+  "image_a": { "mime_type": "image/png", "data": "base64..." },
+  "image_a_original": { "mime_type": "image/png", "data": "base64..." },
+  "image_b_original": { "mime_type": "image/png", "data": "base64..." },
+  "image_b_aligned": { "mime_type": "image/png", "data": "base64..." },
+  "overlay": { "mime_type": "image/png", "data": "base64..." },
+  "mask": { "mime_type": "image/png", "data": "base64..." },
+  "diff_rects": [{ "x": 100, "y": 80, "width": 40, "height": 20, "area": 800 }],
+  "diff_pixels": 1234,
+  "diff_ratio": 0.00257,
+  "diff_threshold": 0.1,
+  "conversion_warnings": []
+}`}
+          notes="AIや外部アプリが最初に使う中心API。差分の可視化はoverlay、二値的な差分抽出はmask、機械判定はdiff_ratioとdiff_rectsを見る。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/rediff"
+          purpose="位置合わせ済みの比較結果に対して、しきい値だけを変えて差分を再計算する。再アップロードや再位置合わせを避けるために使う。"
+          request={`Content-Type: application/json
+{
+  "result_id": "/api/diffで返ったID",
+  "diff_threshold": 0.4
+}
+
+cacheが失効した場合のfallback:
+{
+  "image_a": { "mime_type": "image/png", "data": "base64..." },
+  "image_b_aligned": { "mime_type": "image/png", "data": "base64..." },
+  "diff_threshold": 0.4
+}`}
+          response={`{
+  "result_id": "cache-id",
+  "overlay": { "mime_type": "image/png", "data": "base64..." },
+  "mask": { "mime_type": "image/png", "data": "base64..." },
+  "diff_rects": [],
+  "diff_pixels": 0,
+  "diff_ratio": 0,
+  "diff_threshold": 0.4
+}`}
+          notes="404 Diff result cache expired が返った場合はfallback形式でimage_aとimage_b_alignedを送る。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/attachments"
+          purpose="クリップボード由来などの一時画像をバックエンド側に保存する。比較そのものには必須ではない。"
+          request={`Content-Type: multipart/form-data
+file: 保存したい添付ファイル`}
+          response={`{
+  "filename": "clipboard.png",
+  "stored_as": "generated-name.png",
+  "size": 12345,
+  "retention_days": 3,
+  "deleted_expired": 0
+}`}
+          notes="保存ファイルは保持期限後にcleanup対象になる。外部アプリが一時添付の追跡をしたい場合に使う。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/git/images"
+          purpose="指定フォルダのgit差分から、HEAD側と比較できる変更画像を一覧する。"
+          request={`Content-Type: application/json
+{ "folder": "/absolute/path/to/repo/or/subfolder" }`}
+          response={`{
+  "folder": "/absolute/path/to/repo",
+  "repo_root": "/absolute/path/to/repo",
+  "files": [
+    {
+      "path": "new.png",
+      "head_path": "old.png",
+      "status": "R",
+      "comparable": true,
+      "reason": null
+    }
+  ]
+}`}
+          notes="追加ファイルや削除ファイルなどHEAD側がないものはcomparable=falseになる。リネーム/コピーではpathとhead_pathが異なる場合がある。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/git/diff"
+          purpose="git管理下の現在ファイルとHEAD側画像を比較する。リネーム時は現在パスとHEAD側パスを分けて指定する。"
+          request={`Content-Type: application/json
+{
+  "folder": "/absolute/path/to/repo/or/subfolder",
+  "path": "current/path.png",
+  "head_path": "head/path.png",
+  "category": "汎用",
+  "diff_threshold": 0.1
+}`}
+          response="/api/diff と同じ DiffResponse。page_a と page_b は0。"
+          notes="pathとhead_pathはリポジトリ相対パス。絶対パスや..を含むパスは拒否される。"
+        />
+
+        <ApiGuideSection title="外部アプリ向け推奨フロー">
+          <ol>
+            <li><code>GET /api/health</code> で起動確認をする。</li>
+            <li>ユーザーが通常ファイルを比較する場合は、両ファイルに <code>/api/analyze</code> を実行してページ数と警告を取得する。</li>
+            <li>必要なら <code>/api/convert</code> でプレビューと <code>regions</code> を取得し、ユーザーが基準領域を選べるようにする。</li>
+            <li><code>/api/diff</code> に2ファイル、ページ番号、カテゴリ、しきい値、任意の <code>anchor_region</code> を送る。</li>
+            <li>結果表示には <code>image_a</code> と <code>overlay</code> または <code>image_b_aligned</code> を使う。自動判定には <code>diff_ratio</code>, <code>diff_pixels</code>, <code>diff_rects</code> を使う。</li>
+            <li>しきい値だけ変更する場合は <code>/api/rediff</code> を使う。</li>
+          </ol>
+        </ApiGuideSection>
+      </section>
+    </main>
+  );
+}
+
+function ApiGuideSection({ title, children }) {
+  return (
+    <section className="api-guide-section">
+      <h2>{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function ApiEndpoint({ method, path, purpose, request, response, notes }) {
+  return (
+    <section className="api-endpoint">
+      <div className="api-endpoint-title">
+        <span className="api-method">{method}</span>
+        <code>{path}</code>
+      </div>
+      <p>{purpose}</p>
+      <h3>Request</h3>
+      <pre>{request}</pre>
+      <h3>Response</h3>
+      <pre>{response}</pre>
+      <h3>Notes for AI clients</h3>
+      <p>{notes}</p>
+    </section>
+  );
 }
 
 function GitToolbar({
@@ -1543,13 +1810,32 @@ function clamp(value, min, max) {
 }
 
 function Root() {
-  const [route, setRoute] = useState(window.location.hash);
+  const [route, setRoute] = useState({ hash: window.location.hash, pathname: window.location.pathname });
   useEffect(() => {
-    const onHashChange = () => setRoute(window.location.hash);
+    const updateRoute = () => setRoute({ hash: window.location.hash, pathname: window.location.pathname });
+    const originalPushState = window.history.pushState;
+    const originalReplaceState = window.history.replaceState;
+    window.history.pushState = function pushState(...args) {
+      originalPushState.apply(this, args);
+      updateRoute();
+    };
+    window.history.replaceState = function replaceState(...args) {
+      originalReplaceState.apply(this, args);
+      updateRoute();
+    };
+    const onHashChange = updateRoute;
+    const onPopState = updateRoute;
     window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.history.pushState = originalPushState;
+      window.history.replaceState = originalReplaceState;
+      window.removeEventListener("hashchange", onHashChange);
+      window.removeEventListener("popstate", onPopState);
+    };
   }, []);
-  return route.startsWith("#diff-memo") ? <MemoDiffApp /> : <App />;
+  if (route.pathname === "/api-guide") return <ApiGuideApp />;
+  return route.hash.startsWith("#diff-memo") ? <MemoDiffApp /> : <App />;
 }
 
 createRoot(document.getElementById("root")).render(<Root />);

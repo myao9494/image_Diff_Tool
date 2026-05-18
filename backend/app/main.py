@@ -466,6 +466,11 @@ def serve_frontend() -> FileResponse:
     return FileResponse(index)
 
 
+@app.get("/api-guide", include_in_schema=False)
+def serve_api_guide() -> FileResponse:
+    return serve_frontend()
+
+
 @app.get("/{filename}", include_in_schema=False)
 def serve_frontend_file(filename: str) -> FileResponse:
     path = DIST_DIR / filename
