@@ -42,6 +42,8 @@ class ImagePayload(BaseModel):
 
 class DiffResponse(BaseModel):
     result_id: str | None = None
+    filename_a: str | None = None
+    filename_b: str | None = None
     page_a: int
     page_b: int
     category: str

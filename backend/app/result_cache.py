@@ -17,6 +17,11 @@ class DiffImages:
     image_a: np.ndarray
     image_b_aligned: np.ndarray
     size_bytes: int
+    filename_a: str | None = None
+    filename_b: str | None = None
+    page_a: int = 0
+    page_b: int = 0
+    category: str = "汎用"
 
 
 _cache: OrderedDict[str, DiffImages] = OrderedDict()
@@ -24,7 +29,16 @@ _cache_bytes = 0
 _lock = Lock()
 
 
-def store_diff_images(image_a: np.ndarray, image_b_aligned: np.ndarray) -> str:
+def store_diff_images(
+    image_a: np.ndarray,
+    image_b_aligned: np.ndarray,
+    *,
+    filename_a: str | None = None,
+    filename_b: str | None = None,
+    page_a: int = 0,
+    page_b: int = 0,
+    category: str = "汎用",
+) -> str:
     result_id = uuid4().hex
     size_bytes = int(image_a.nbytes + image_b_aligned.nbytes)
     if size_bytes > MAX_CACHE_BYTES:
@@ -32,7 +46,16 @@ def store_diff_images(image_a: np.ndarray, image_b_aligned: np.ndarray) -> str:
 
     with _lock:
         global _cache_bytes
-        _cache[result_id] = DiffImages(image_a=image_a, image_b_aligned=image_b_aligned, size_bytes=size_bytes)
+        _cache[result_id] = DiffImages(
+            image_a=image_a,
+            image_b_aligned=image_b_aligned,
+            size_bytes=size_bytes,
+            filename_a=filename_a,
+            filename_b=filename_b,
+            page_a=page_a,
+            page_b=page_b,
+            category=category,
+        )
         _cache_bytes += size_bytes
         _cache.move_to_end(result_id)
         _evict_if_needed()

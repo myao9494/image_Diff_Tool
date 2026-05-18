@@ -83,7 +83,7 @@ function App() {
   const gitRequestIdRef = useRef(0);
   const previewRequestIdRef = useRef({ left: 0, right: 0 });
 
-  const canCompare = Boolean(left?.file && right?.file);
+  const canCompare = Boolean(left?.file instanceof File && right?.file instanceof File);
   const comparableGitFiles = useMemo(() => (gitInfo?.files ?? []).filter((file) => file.comparable), [gitInfo]);
   const currentGitFile = comparableGitFiles[gitIndex] ?? null;
   const activeResult = activeTab === "git" ? gitResult : result;
@@ -196,7 +196,31 @@ function App() {
   }
 
   useEffect(() => {
-    if (activeTab === "files" && (!result || !canCompare || result.diff_threshold === diffThreshold)) return undefined;
+    const resultId = externalResultIdFromLocation();
+    if (!resultId) return;
+    setActiveTab("files");
+    setBusy(true);
+    setError("");
+    getJson(`/diff/${encodeURIComponent(resultId)}?diff_threshold=${encodeURIComponent(diffThreshold)}`)
+      .then((cachedResult) => {
+        setResult(cachedResult);
+        setLeft(externalFileData("A", cachedResult));
+        setRight(externalFileData("B", cachedResult));
+        setPageA(cachedResult.page_a ?? 0);
+        setPageB(cachedResult.page_b ?? 0);
+        setCategory(cachedResult.category ?? "汎用");
+        setView("overlay");
+      })
+      .catch((err) => {
+        setError(err.status === 404 ? "差分結果のキャッシュが見つかりません。もう一度 /api/diff を実行してください。" : err.message);
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "files" && (!result || (!canCompare && result.alignment?.method !== "cached") || result.diff_threshold === diffThreshold)) return undefined;
     if (activeTab === "git" && (!gitResult || gitResult.diff_threshold === diffThreshold)) return undefined;
     const timer = window.setTimeout(() => {
       rethreshold(diffThreshold, activeTab);
@@ -685,6 +709,8 @@ diff_threshold: 0.0から1.0の差分しきい値。省略時0.1
 anchor_region: 任意。JSON文字列。例 {"x":0,"y":0,"width":800,"height":600,"label":"全体枠候補"}`}
           response={`{
   "result_id": "cache-id",
+  "filename_a": "drawing-before.png",
+  "filename_b": "clipboard.png",
   "page_a": 0,
   "page_b": 0,
   "category": "図面",
@@ -710,7 +736,17 @@ anchor_region: 任意。JSON文字列。例 {"x":0,"y":0,"width":800,"height":60
   "diff_threshold": 0.1,
   "conversion_warnings": []
 }`}
-          notes="AIや外部アプリが最初に使う中心API。差分の可視化はoverlay、二値的な差分抽出はmask、機械判定はdiff_ratioとdiff_rectsを見る。"
+          notes="AIや外部アプリが最初に使う中心API。localhost/127.0.0.1で呼ばれた場合は、成功後にWebアプリも http://127.0.0.1:8078/?result_id=... 形式で自動表示する。差分の可視化はoverlay、二値的な差分抽出はmask、機械判定はdiff_ratioとdiff_rectsを見る。"
+        />
+
+        <ApiEndpoint
+          method="GET"
+          path="/api/diff/{result_id}"
+          purpose="/api/diffで作成済みの短期キャッシュ結果を取得し、外部アプリからWeb画面表示へつなぐ。"
+          request={`Query:
+diff_threshold: 0.0から1.0の差分しきい値。省略時0.1`}
+          response="/api/diff と同じ DiffResponse。"
+          notes="外部アプリは /api/diff 成功後に http://127.0.0.1:8078/?result_id=cache-id を開くと、このエンドポイント経由でWebアプリが結果を表示する。"
         />
 
         <ApiEndpoint
@@ -1469,6 +1505,15 @@ async function postJson(path, payload) {
   return body;
 }
 
+async function getJson(path) {
+  const response = await fetch(`${API_BASE}${path}`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw apiError(body.detail || `API error: ${response.status}`, response.status);
+  }
+  return body;
+}
+
 function apiError(message, status) {
   const error = new Error(message);
   error.status = status;
@@ -1588,6 +1633,37 @@ function idbRequest(request) {
 function memoPayloadIdFromHash() {
   const [, id] = window.location.hash.match(/^#diff-memo\/(.+)$/) ?? [];
   return id ? decodeURIComponent(id) : null;
+}
+
+function externalResultIdFromLocation() {
+  return new URLSearchParams(window.location.search).get("result_id");
+}
+
+function externalFileData(side, result) {
+  const filename = side === "A" ? result.filename_a : result.filename_b;
+  const page = side === "A" ? result.page_a : result.page_b;
+  return {
+    file: { name: filename || `API File ${side}` },
+    metadata: {
+      format: extensionForFilename(filename),
+      page_count: Math.max(1, Number(page ?? 0) + 1),
+      pages: [
+        {
+          index: Number(page ?? 0),
+          width: result.width,
+          height: result.height,
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    },
+    external: true,
+  };
+}
+
+function extensionForFilename(filename) {
+  const extension = String(filename || "").split(".").pop()?.toLowerCase();
+  return extension && extension !== filename ? extension : "png";
 }
 
 function isTypingTarget(target) {

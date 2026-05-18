@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import webbrowser
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +39,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:8078",
         "http://127.0.0.1:8078",
+        "app://obsidian.md",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -118,6 +121,8 @@ async def convert(file: UploadFile = File(...), page: int = Form(0)) -> JSONResp
 
 @app.post("/api/diff", response_model=DiffResponse)
 async def diff(
+    background_tasks: BackgroundTasks,
+    request: Request,
     file_a: UploadFile = File(...),
     file_b: UploadFile = File(...),
     page_a: int = Form(0),
@@ -138,10 +143,23 @@ async def diff(
     comparison_a = resize_to_match(alignment.image, comparison_a)
     comparison_b = resize_to_match(comparison_a, alignment.image)
     diff_result = build_visual_diff(comparison_a, comparison_b, threshold=diff_threshold)
-    result_id = store_diff_images(comparison_a, comparison_b)
+    filename_a = file_a.filename or "a"
+    filename_b = file_b.filename or "b"
+    result_id = store_diff_images(
+        comparison_a,
+        comparison_b,
+        filename_a=filename_a,
+        filename_b=filename_b,
+        page_a=raster_a.index,
+        page_b=raster_b.index,
+        category=category,
+    )
+    _schedule_open_result(background_tasks, request, result_id)
 
     return DiffResponse(
         result_id=result_id,
+        filename_a=filename_a,
+        filename_b=filename_b,
         page_a=raster_a.index,
         page_b=raster_b.index,
         category=category,
@@ -195,6 +213,14 @@ async def rediff(payload: RediffRequest) -> RediffResponse:
         diff_ratio=diff_result["diff_ratio"],
         diff_threshold=diff_result["threshold"],
     )
+
+
+@app.get("/api/diff/{result_id}", response_model=DiffResponse)
+async def get_diff_result(result_id: str, diff_threshold: float = 0.1) -> DiffResponse:
+    cached = get_diff_images(result_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="Diff result cache expired")
+    return _build_cached_diff_response(result_id, cached, diff_threshold)
 
 
 @app.post("/api/git/images")
@@ -321,9 +347,19 @@ def _build_diff_response(
     comparison_a = resize_to_match(alignment.image, comparison_a)
     comparison_b = resize_to_match(comparison_a, alignment.image)
     diff_result = build_visual_diff(comparison_a, comparison_b, threshold=diff_threshold)
-    result_id = store_diff_images(comparison_a, comparison_b)
+    result_id = store_diff_images(
+        comparison_a,
+        comparison_b,
+        filename_a=filename_a,
+        filename_b=filename_b,
+        page_a=raster_a.index,
+        page_b=raster_b.index,
+        category=category,
+    )
     return DiffResponse(
         result_id=result_id,
+        filename_a=filename_a,
+        filename_b=filename_b,
         page_a=raster_a.index,
         page_b=raster_b.index,
         category=category,
@@ -349,6 +385,57 @@ def _build_diff_response(
         diff_threshold=diff_result["threshold"],
         conversion_warnings=_page_warnings([raster_a, raster_b]),
     )
+
+
+def _build_cached_diff_response(result_id: str, cached, diff_threshold: float) -> DiffResponse:
+    comparison_a = resize_to_match(cached.image_b_aligned, cached.image_a)
+    comparison_b = resize_to_match(comparison_a, cached.image_b_aligned)
+    diff_result = build_visual_diff(comparison_a, comparison_b, threshold=diff_threshold)
+    return DiffResponse(
+        result_id=result_id,
+        filename_a=cached.filename_a,
+        filename_b=cached.filename_b,
+        page_a=cached.page_a,
+        page_b=cached.page_b,
+        category=cached.category,
+        width=comparison_a.shape[1],
+        height=comparison_a.shape[0],
+        alignment=AlignmentInfo(
+            success=True,
+            method="cached",
+            warning=None,
+            matches=0,
+            inliers=0,
+            matrix=None,
+        ),
+        image_a=ImagePayload(data=encode_png(cv_to_pil(comparison_a))),
+        image_a_original=ImagePayload(data=encode_png(cv_to_pil(comparison_a))),
+        image_b_original=ImagePayload(data=encode_png(cv_to_pil(comparison_b))),
+        image_b_aligned=ImagePayload(data=encode_png(cv_to_pil(comparison_b))),
+        overlay=ImagePayload(data=encode_png(cv_to_pil(diff_result["overlay"]))),
+        mask=ImagePayload(data=encode_png(cv_to_pil(diff_result["mask"]))),
+        diff_rects=diff_result["rects"],
+        diff_pixels=diff_result["diff_pixels"],
+        diff_ratio=diff_result["diff_ratio"],
+        diff_threshold=diff_result["threshold"],
+        conversion_warnings=[],
+    )
+
+
+def _schedule_open_result(background_tasks: BackgroundTasks, request: Request, result_id: str) -> None:
+    if os.environ.get("VISUAL_DIFF_OPEN_BROWSER", "1").lower() in {"0", "false", "no"}:
+        return
+    if request.url.hostname not in {"127.0.0.1", "localhost"}:
+        return
+    url = str(request.base_url.include_query_params(result_id=result_id))
+    background_tasks.add_task(_open_browser, url)
+
+
+def _open_browser(url: str) -> None:
+    try:
+        webbrowser.open(url, new=2, autoraise=True)
+    except Exception:
+        pass
 
 
 def _payload_folder(payload: dict) -> Path:
