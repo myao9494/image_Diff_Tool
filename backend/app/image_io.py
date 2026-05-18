@@ -243,12 +243,30 @@ def _rasterize_tiff(content: bytes, selected_pages: set[int] | None) -> list[Ras
 
 
 def _rasterize_svg(content: bytes) -> Image.Image:
+    errors = []
     try:
         import cairosvg
-    except ImportError as exc:
-        raise ConversionError("CairoSVG is required for SVG conversion") from exc
-    png = cairosvg.svg2png(bytestring=content, background_color="white")
-    return _load_pil_image(png, "SVG")
+        png = cairosvg.svg2png(bytestring=content, background_color="white")
+        return _load_pil_image(png, "SVG")
+    except Exception as exc:
+        errors.append(f"CairoSVG: {exc}")
+
+    try:
+        import fitz
+
+        with fitz.open(stream=content, filetype="svg") as doc:
+            if len(doc) < 1:
+                raise ConversionError("SVG has no pages")
+            page = doc[0]
+            pix = page.get_pixmap(alpha=True)
+            _validate_raster_dimensions(pix.width, pix.height, "SVG")
+            mode = "RGBA" if pix.alpha else "RGB"
+            image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+            return normalize_page_image(image)
+    except Exception as exc:
+        errors.append(f"PyMuPDF: {exc}")
+
+    raise ConversionError("Could not convert SVG. " + "; ".join(errors))
 
 
 def _rasterize_excalidraw(content: bytes, markdown: bool) -> tuple[Image.Image, tuple[str, ...]]:

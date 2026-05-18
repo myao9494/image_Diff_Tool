@@ -34,6 +34,7 @@ start_windows.bat
 ```
 
 Both scripts create `.venv` if needed, run `pip install -r requirements.txt`, and start the FastAPI server.
+On Windows, if an existing broken `.venv` cannot be removed because of file locks or ownership, `start_windows.bat` falls back to `.venv_windows`.
 After startup, open:
 
 ```text

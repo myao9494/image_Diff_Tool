@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import webbrowser
 from pathlib import Path
@@ -62,6 +63,7 @@ IMAGE_EXTENSIONS = {
     ".excalidraw",
 }
 READ_CHUNK_SIZE = 1024 * 1024
+DUBIOUS_OWNERSHIP_RE = re.compile(r"detected dubious ownership in repository at '([^']+)'")
 
 
 @app.get("/api/health")
@@ -454,15 +456,31 @@ def _payload_folder(payload: dict) -> Path:
 
 def _git_repo_root(folder: Path) -> Path:
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(folder), "rev-parse", "--show-toplevel"],
+        completed = _run_git_process(
+            folder,
+            ["rev-parse", "--show-toplevel"],
             check=True,
             capture_output=True,
             text=True,
             timeout=10,
         )
     except subprocess.CalledProcessError as exc:
-        raise HTTPException(status_code=422, detail="指定フォルダはgitリポジトリではありません") from exc
+        if _is_dubious_ownership_error(exc):
+            safe_directory = _safe_directory_from_error(exc, folder)
+            try:
+                completed = _run_git_process(
+                    folder,
+                    ["rev-parse", "--show-toplevel"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    safe_directory=safe_directory,
+                )
+            except subprocess.CalledProcessError as retry_exc:
+                raise HTTPException(status_code=422, detail=retry_exc.stderr.strip() or "指定フォルダはgitリポジトリではありません") from retry_exc
+        else:
+            raise HTTPException(status_code=422, detail="指定フォルダはgitリポジトリではありません") from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="git repository check timed out") from exc
     return Path(completed.stdout.strip()).resolve()
@@ -512,11 +530,14 @@ def _safe_git_path(repo: Path, path: str) -> str:
 
 def _git_show(repo: Path, rel_path: str) -> bytes:
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(repo), "show", f"HEAD:{rel_path}"],
+        completed = _run_git_process(
+            repo,
+            ["show", f"HEAD:{rel_path}"],
             check=True,
             capture_output=True,
             timeout=20,
+            text=False,
+            safe_directory=repo,
         )
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=404, detail=f"HEAD側の画像を取得できません: {rel_path}") from exc
@@ -527,18 +548,45 @@ def _git_show(repo: Path, rel_path: str) -> bytes:
 
 def _git(args: list[str], repo: Path) -> str:
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(repo), *args],
+        completed = _run_git_process(
+            repo,
+            args,
             check=True,
             capture_output=True,
             text=True,
             timeout=20,
+            safe_directory=repo,
         )
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=422, detail=exc.stderr.strip() or "git command failed") from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="git command timed out") from exc
     return completed.stdout
+
+
+def _run_git_process(
+    cwd: Path,
+    args: list[str],
+    *,
+    safe_directory: Path | str | None = None,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    command = ["git"]
+    if safe_directory is not None:
+        command.extend(["-c", f"safe.directory={Path(safe_directory).resolve().as_posix()}"])
+    command.extend(["-C", str(cwd), *args])
+    return subprocess.run(command, **kwargs)
+
+
+def _is_dubious_ownership_error(exc: subprocess.CalledProcessError) -> bool:
+    return "dubious ownership" in (exc.stderr or "")
+
+
+def _safe_directory_from_error(exc: subprocess.CalledProcessError, fallback: Path) -> Path:
+    match = DUBIOUS_OWNERSHIP_RE.search(exc.stderr or "")
+    if match:
+        return Path(match.group(1)).resolve()
+    return fallback.resolve()
 
 
 if ASSETS_DIR.exists():

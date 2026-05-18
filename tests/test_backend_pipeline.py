@@ -3,6 +3,7 @@ import unittest
 import json
 import subprocess
 import tempfile
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
@@ -12,6 +13,7 @@ from PIL import Image
 
 from backend.app.attachments import ATTACHMENTS_DIR, cleanup_expired_attachments
 from backend.app.diffing import build_visual_diff
+from backend.app.image_io import rasterize_upload_page
 from backend.app.main import app
 
 
@@ -47,6 +49,51 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertEqual(body["pages"][0]["width"], 800)
         self.assertEqual(body["pages"][0]["height"], 600)
 
+    def test_analyze_and_convert_multipage_pdf(self):
+        import fitz
+
+        doc = fitz.open()
+        page_a = doc.new_page(width=120, height=80)
+        page_a.draw_rect(fitz.Rect(10, 10, 80, 50), color=(1, 0, 0), fill=(1, 0, 0))
+        page_b = doc.new_page(width=90, height=140)
+        page_b.draw_rect(fitz.Rect(15, 20, 70, 120), color=(0, 0, 1), fill=(0, 0, 1))
+        pdf = BytesIO(doc.tobytes())
+
+        analyze_response = self.client.post("/api/analyze", files={"file": ("pages.pdf", pdf, "application/pdf")})
+        self.assertEqual(analyze_response.status_code, 200)
+        self.assertEqual(analyze_response.json()["page_count"], 2)
+
+        pdf.seek(0)
+        convert_response = self.client.post(
+            "/api/convert",
+            files={"file": ("pages.pdf", pdf, "application/pdf")},
+            data={"page": "1"},
+        )
+        self.assertEqual(convert_response.status_code, 200)
+        self.assertEqual(convert_response.json()["page"], 1)
+
+    def test_analyze_and_convert_multipage_tiff(self):
+        frame_a = Image.new("RGB", (80, 60), "white")
+        frame_b = Image.new("RGB", (120, 90), "black")
+        tiff = BytesIO()
+        frame_a.save(tiff, format="TIFF", save_all=True, append_images=[frame_b])
+        tiff.seek(0)
+
+        analyze_response = self.client.post("/api/analyze", files={"file": ("pages.tiff", tiff, "image/tiff")})
+        self.assertEqual(analyze_response.status_code, 200)
+        self.assertEqual(analyze_response.json()["page_count"], 2)
+
+        tiff.seek(0)
+        convert_response = self.client.post(
+            "/api/convert",
+            files={"file": ("pages.tiff", tiff, "image/tiff")},
+            data={"page": "1"},
+        )
+        self.assertEqual(convert_response.status_code, 200)
+        self.assertEqual(convert_response.json()["page"], 1)
+        self.assertEqual(convert_response.json()["width"], 120)
+        self.assertEqual(convert_response.json()["height"], 90)
+
     def test_convert_png_suggests_anchor_regions(self):
         with open(os.path.join(self.samples_dir, "gear_a.png"), "rb") as image:
             response = self.client.post(
@@ -62,6 +109,23 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertIn("label", first_region)
         self.assertGreater(first_region["width"], 20)
         self.assertGreater(first_region["height"], 20)
+
+    def test_svg_conversion_falls_back_when_cairosvg_native_library_is_unavailable(self):
+        svg = b"""<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80">
+          <rect x="10" y="10" width="80" height="40" fill="#cc0000"/>
+        </svg>"""
+        original_import = __import__
+
+        def blocked_cairosvg_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "cairosvg":
+                raise OSError("no native cairo library")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=blocked_cairosvg_import):
+            fmt, page = rasterize_upload_page("shape.svg", svg)
+
+        self.assertEqual(fmt, "svg")
+        self.assertEqual(page.image.size, (120, 80))
 
     def test_convert_graph_suggests_plot_frame_region(self):
         with open(os.path.join(self.samples_dir, "bathtub_curve_a.png"), "rb") as image:
@@ -360,6 +424,15 @@ class TestBackendPipeline(unittest.TestCase):
             self.assertEqual(diff_response.status_code, 200, diff_response.text)
             self.assertEqual(diff_response.json()["page_a"], 0)
             self.assertEqual(diff_response.json()["page_b"], 0)
+
+    def test_git_images_accepts_current_repository_folder(self):
+        repo_root = os.path.dirname(os.path.dirname(__file__))
+        response = self.client.post("/api/git/images", json={"folder": repo_root})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            os.path.normcase(response.json()["repo_root"]),
+            os.path.normcase(os.path.abspath(repo_root)),
+        )
 
     def _git(self, cwd, *args):
         subprocess.run(["git", "-C", cwd, *args], check=True, capture_output=True)
