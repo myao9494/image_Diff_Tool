@@ -56,6 +56,12 @@ const MEMO_DEFAULTS = {
   leaderEndX: -73,
   leaderEndY: 163,
 };
+const MEMO_EXTRA_LEADER_DEFAULT = {
+  leaderX: 162,
+  leaderY: 46,
+  leaderEndX: 275,
+  leaderEndY: 163,
+};
 
 function App() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -975,13 +981,19 @@ function MemoDiffApp() {
 
   useEffect(() => {
     function handleShortcut(event) {
-      if (event.key.toLowerCase() !== "t" || isTypingTarget(event.target)) return;
+      if (isTypingTarget(event.target)) return;
+      const key = event.key.toLowerCase();
+      if (key !== "t" && key !== "l") return;
       event.preventDefault();
-      addNote();
+      if (key === "l") {
+        addLeaderLine();
+      } else {
+        addNote();
+      }
     }
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, []);
+  }, [selectedNoteId]);
 
   useEffect(() => {
     function moveNote(event) {
@@ -989,12 +1001,11 @@ function MemoDiffApp() {
         updateSliderFromPointer(event);
       }
       if (leaderDragRef.current) {
-        const { id, rect, point } = leaderDragRef.current;
+        const { id, lineId, rect, point } = leaderDragRef.current;
         const x = clamp(event.clientX - rect.left, -420, 620);
         const y = clamp(event.clientY - rect.top, -240, 520);
         const start = snapMemoLeaderPoint({ x, y }, { width: rect.width, height: rect.height });
-        const fields = point === "end" ? { leaderEndX: x, leaderEndY: y } : { leaderX: start.x, leaderY: start.y };
-        setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === id ? { ...item, ...fields } : item)));
+        setNotes((items) => normalizeMemoNotes(items).map((item) => updateMemoLeader(item, id, lineId, point, { start, end: { x, y } })));
         return;
       }
       if (!dragRef.current || !stageRef.current) return;
@@ -1039,6 +1050,29 @@ function MemoDiffApp() {
     setSelectedNoteId(id);
   }
 
+  function addLeaderLine() {
+    if (!selectedNoteId) {
+      const id = crypto.randomUUID?.() ?? String(Date.now());
+      const lineId = crypto.randomUUID?.() ?? `${id}-line`;
+      const next = {
+        id,
+        ...MEMO_DEFAULTS,
+        x: 42,
+        y: 12,
+        extraLeaders: [{ id: lineId, ...MEMO_EXTRA_LEADER_DEFAULT }],
+      };
+      setNotes((items) => [...normalizeMemoNotes(items), next]);
+      setSelectedNoteId(id);
+      return;
+    }
+    const lineId = crypto.randomUUID?.() ?? `${selectedNoteId}-line-${Date.now()}`;
+    setNotes((items) => normalizeMemoNotes(items).map((item) => (
+      item.id === selectedNoteId
+        ? { ...item, extraLeaders: [...item.extraLeaders, { id: lineId, ...nextExtraLeader(item.extraLeaders.length) }] }
+        : item
+    )));
+  }
+
   function updateNote(id, text) {
     setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === id ? { ...item, text } : item)));
   }
@@ -1065,7 +1099,7 @@ function MemoDiffApp() {
     event.stopPropagation();
     const rect = event.currentTarget.closest(".memo-note")?.getBoundingClientRect();
     if (!rect) return;
-    leaderDragRef.current = { id: note.id, rect, point };
+    leaderDragRef.current = { id: note.id, lineId: event.currentTarget.dataset.lineId ?? "primary", rect, point };
     setSelectedNoteId(note.id);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
@@ -1242,6 +1276,9 @@ function MemoDiffApp() {
               onChange={(event) => updateNoteFields(selectedNote.id, { leaderEndY: clamp(Number(event.target.value), -240, 520) })}
             />
           </label>
+          <button type="button" onClick={addLeaderLine}>
+            LINE追加 (L)
+          </button>
         </section>
       )}
 
@@ -1256,7 +1293,7 @@ function MemoDiffApp() {
             <span>B</span>
           </div>
           {safeNotes.map((note) => {
-            const leaderStart = memoLeaderStart(note);
+            const leaders = memoNoteLeaders(note);
             return (
               <div
                 key={note.id}
@@ -1271,22 +1308,30 @@ function MemoDiffApp() {
                 onPointerDown={(event) => startDrag(event, note)}
               >
                 <svg className="memo-leader" viewBox="-420 -240 1040 760" aria-hidden="true">
-                  <line x1={leaderStart.x} y1={leaderStart.y} x2={note.leaderEndX} y2={note.leaderEndY} />
+                  {leaders.map((leader) => (
+                    <line key={leader.id} x1={leader.start.x} y1={leader.start.y} x2={leader.endX} y2={leader.endY} />
+                  ))}
                 </svg>
-                <button
-                  type="button"
-                  className="memo-leader-handle"
-                  title="引出線の起点をドラッグ"
-                  style={{ left: `${leaderStart.x}px`, top: `${leaderStart.y}px` }}
-                  onPointerDown={(event) => startLeaderDrag(event, note, "start")}
-                />
-                <button
-                  type="button"
-                  className="memo-leader-handle end"
-                  title="引出線の終点をドラッグ"
-                  style={{ left: `${note.leaderEndX}px`, top: `${note.leaderEndY}px` }}
-                  onPointerDown={(event) => startLeaderDrag(event, note, "end")}
-                />
+                {leaders.map((leader, index) => (
+                  <React.Fragment key={leader.id}>
+                    <button
+                      type="button"
+                      className={`memo-leader-handle ${index > 0 ? "extra" : ""}`}
+                      title="引出線の起点をドラッグ"
+                      data-line-id={leader.id}
+                      style={{ left: `${leader.start.x}px`, top: `${leader.start.y}px` }}
+                      onPointerDown={(event) => startLeaderDrag(event, note, "start")}
+                    />
+                    <button
+                      type="button"
+                      className={`memo-leader-handle end ${index > 0 ? "extra" : ""}`}
+                      title="引出線の終点をドラッグ"
+                      data-line-id={leader.id}
+                      style={{ left: `${leader.endX}px`, top: `${leader.endY}px` }}
+                      onPointerDown={(event) => startLeaderDrag(event, note, "end")}
+                    />
+                  </React.Fragment>
+                ))}
                 <textarea
                   value={note.text}
                   aria-label="メモ本文"
@@ -1688,6 +1733,20 @@ function normalizeMemoNotes(notes) {
       leaderY: Number.isFinite(Number(note.leaderY)) ? clamp(Number(note.leaderY), -240, 520) : MEMO_DEFAULTS.leaderY,
       leaderEndX: Number.isFinite(Number(note.leaderEndX)) ? clamp(Number(note.leaderEndX), -420, 620) : MEMO_DEFAULTS.leaderEndX,
       leaderEndY: Number.isFinite(Number(note.leaderEndY)) ? clamp(Number(note.leaderEndY), -240, 520) : MEMO_DEFAULTS.leaderEndY,
+      extraLeaders: normalizeExtraMemoLeaders(note.extraLeaders),
+    }));
+}
+
+function normalizeExtraMemoLeaders(leaders) {
+  if (!Array.isArray(leaders)) return [];
+  return leaders
+    .filter((leader) => leader && typeof leader === "object")
+    .map((leader, index) => ({
+      id: leader.id ? String(leader.id) : `line-${Date.now()}-${index}`,
+      leaderX: Number.isFinite(Number(leader.leaderX)) ? clamp(Number(leader.leaderX), -420, 620) : MEMO_EXTRA_LEADER_DEFAULT.leaderX,
+      leaderY: Number.isFinite(Number(leader.leaderY)) ? clamp(Number(leader.leaderY), -240, 520) : MEMO_EXTRA_LEADER_DEFAULT.leaderY,
+      leaderEndX: Number.isFinite(Number(leader.leaderEndX)) ? clamp(Number(leader.leaderEndX), -420, 620) : MEMO_EXTRA_LEADER_DEFAULT.leaderEndX,
+      leaderEndY: Number.isFinite(Number(leader.leaderEndY)) ? clamp(Number(leader.leaderEndY), -240, 520) : MEMO_EXTRA_LEADER_DEFAULT.leaderEndY,
     }));
 }
 
@@ -1705,6 +1764,45 @@ function memoSize(note) {
 
 function memoLeaderStart(note) {
   return snapMemoLeaderPoint({ x: note.leaderX, y: note.leaderY }, memoSize(note));
+}
+
+function memoNoteLeaders(note) {
+  const size = memoSize(note);
+  return [
+    {
+      id: "primary",
+      start: snapMemoLeaderPoint({ x: note.leaderX, y: note.leaderY }, size),
+      endX: note.leaderEndX,
+      endY: note.leaderEndY,
+    },
+    ...note.extraLeaders.map((leader) => ({
+      id: leader.id,
+      start: snapMemoLeaderPoint({ x: leader.leaderX, y: leader.leaderY }, size),
+      endX: leader.leaderEndX,
+      endY: leader.leaderEndY,
+    })),
+  ];
+}
+
+function updateMemoLeader(note, noteId, lineId, point, points) {
+  if (note.id !== noteId) return note;
+  const fields = point === "end"
+    ? { leaderEndX: points.end.x, leaderEndY: points.end.y }
+    : { leaderX: points.start.x, leaderY: points.start.y };
+  if (lineId === "primary") return { ...note, ...fields };
+  return {
+    ...note,
+    extraLeaders: note.extraLeaders.map((leader) => (leader.id === lineId ? { ...leader, ...fields } : leader)),
+  };
+}
+
+function nextExtraLeader(index) {
+  const offset = index * 28;
+  return {
+    ...MEMO_EXTRA_LEADER_DEFAULT,
+    leaderY: clamp(MEMO_EXTRA_LEADER_DEFAULT.leaderY + offset, -240, 520),
+    leaderEndY: clamp(MEMO_EXTRA_LEADER_DEFAULT.leaderEndY + offset, -240, 520),
+  };
 }
 
 function snapMemoLeaderPoint(point, size) {
@@ -1815,23 +1913,23 @@ function drawNotes(ctx, notes, width, height, stageSize = null) {
     const x = (note.x / 100) * width;
     const y = (note.y / 100) * height;
     const noteSize = memoSize(note);
-    const leaderStart = memoLeaderStart(note);
+    const leaders = memoNoteLeaders(note);
     ctx.save();
     ctx.font = `700 ${note.fontSize * scale}px sans-serif`;
     const labelWidth = noteSize.width * scale;
     const lines = wrapCanvasText(ctx, text, labelWidth - 28 * scale);
     const labelHeight = noteSize.height * scale;
-    const leaderStartX = x + leaderStart.x * scale;
-    const leaderStartY = y + leaderStart.y * scale;
     const memoAlpha = note.opacity / 100;
     ctx.fillStyle = `rgba(255, 29, 20, ${memoAlpha})`;
     ctx.strokeStyle = `rgba(255, 29, 20, ${memoAlpha})`;
     ctx.lineWidth = 6 * scale;
     ctx.lineCap = "butt";
-    ctx.beginPath();
-    ctx.moveTo(leaderStartX, leaderStartY);
-    ctx.lineTo(x + note.leaderEndX * scale, y + note.leaderEndY * scale);
-    ctx.stroke();
+    leaders.forEach((leader) => {
+      ctx.beginPath();
+      ctx.moveTo(x + leader.start.x * scale, y + leader.start.y * scale);
+      ctx.lineTo(x + leader.endX * scale, y + leader.endY * scale);
+      ctx.stroke();
+    });
     roundedRect(ctx, x, y, labelWidth, labelHeight, 10 * scale);
     ctx.fill();
     ctx.fillStyle = "#ffffff";

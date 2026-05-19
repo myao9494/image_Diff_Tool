@@ -763,6 +763,15 @@ select {
   border-color: #ff1d14;
 }
 
+.memo-leader-handle.extra {
+  background: #f97316;
+}
+
+.memo-leader-handle.end.extra {
+  background: #fff7ed;
+  border-color: #f97316;
+}
+
 .memo-note.selected .memo-leader-handle {
   opacity: 1;
 }
