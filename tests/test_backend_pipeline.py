@@ -13,8 +13,8 @@ from PIL import Image
 
 from backend.app.attachments import ATTACHMENTS_DIR, cleanup_expired_attachments
 from backend.app.diffing import build_visual_diff
-from backend.app.image_io import rasterize_upload_page
-from backend.app.main import app
+from backend.app.image_io import _prepare_svg_for_rasterization, rasterize_upload_page
+from backend.app.main import _git, _run_git_process, app
 
 
 class TestBackendPipeline(unittest.TestCase):
@@ -126,6 +126,24 @@ class TestBackendPipeline(unittest.TestCase):
 
         self.assertEqual(fmt, "svg")
         self.assertEqual(page.image.size, (120, 80))
+
+    def test_drawio_svg_keeps_svg_text_fallback(self):
+        svg = b'''<?xml version="1.0" encoding="UTF-8"?>
+        <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80">
+          <g transform="translate(20,20)">
+            <switch>
+              <foreignObject width="80" height="20">
+                <div xmlns="http://www.w3.org/1999/xhtml">HTML label</div>
+              </foreignObject>
+              <text x="0" y="16">SVG label</text>
+            </switch>
+          </g>
+        </svg>'''
+
+        prepared = _prepare_svg_for_rasterization(svg)
+
+        self.assertNotIn(b"foreignObject", prepared)
+        self.assertIn(b"SVG label", prepared)
 
     def test_convert_graph_suggests_plot_frame_region(self):
         with open(os.path.join(self.samples_dir, "bathtub_curve_a.png"), "rb") as image:
@@ -433,6 +451,34 @@ class TestBackendPipeline(unittest.TestCase):
             os.path.normcase(response.json()["repo_root"]),
             os.path.normcase(os.path.abspath(repo_root)),
         )
+
+    def test_git_text_output_uses_utf8_instead_of_windows_locale(self):
+        completed = subprocess.CompletedProcess(
+            args=["git"],
+            returncode=0,
+            stdout="日本語",
+            stderr="",
+        )
+        with patch("backend.app.main.subprocess.run", return_value=completed) as run:
+            _run_git_process(
+                os.getcwd(),
+                ["status", "--porcelain=v1", "-z"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+
+    def test_git_returns_empty_text_when_stdout_is_none(self):
+        completed = subprocess.CompletedProcess(
+            args=["git"],
+            returncode=0,
+            stdout=None,
+            stderr="",
+        )
+        with patch("backend.app.main._run_git_process", return_value=completed):
+            self.assertEqual(_git(["status"], os.getcwd()), "")
 
     def _git(self, cwd, *args):
         subprocess.run(["git", "-C", cwd, *args], check=True, capture_output=True)

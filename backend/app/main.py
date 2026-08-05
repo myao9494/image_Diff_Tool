@@ -483,7 +483,10 @@ def _git_repo_root(folder: Path) -> Path:
             raise HTTPException(status_code=422, detail="指定フォルダはgitリポジトリではありません") from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="git repository check timed out") from exc
-    return Path(completed.stdout.strip()).resolve()
+    output = completed.stdout or ""
+    if not output.strip():
+        raise HTTPException(status_code=422, detail="git repository root could not be determined")
+    return Path(output.strip()).resolve()
 
 
 def _changed_image_files(repo: Path, folder: Path) -> list[dict]:
@@ -543,7 +546,7 @@ def _git_show(repo: Path, rel_path: str) -> bytes:
         raise HTTPException(status_code=404, detail=f"HEAD側の画像を取得できません: {rel_path}") from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="git show timed out") from exc
-    return completed.stdout
+    return completed.stdout or b""
 
 
 def _git(args: list[str], repo: Path) -> str:
@@ -561,7 +564,10 @@ def _git(args: list[str], repo: Path) -> str:
         raise HTTPException(status_code=422, detail=exc.stderr.strip() or "git command failed") from exc
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="git command timed out") from exc
-    return completed.stdout
+    # A subprocess reader can leave stdout as None after an interrupted/failed
+    # read. Keep callers such as _changed_image_files safe from a secondary
+    # AttributeError while still treating the command as having no output.
+    return completed.stdout or ""
 
 
 def _run_git_process(
@@ -571,6 +577,10 @@ def _run_git_process(
     safe_directory: Path | str | None = None,
     **kwargs,
 ) -> subprocess.CompletedProcess:
+    # Git emits machine-readable text (including -z status output) as UTF-8.
+    # Do not let subprocess choose the Windows locale encoding (often CP932).
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
+        kwargs.setdefault("encoding", "utf-8")
     command = ["git"]
     if safe_directory is not None:
         command.extend(["-c", f"safe.directory={Path(safe_directory).resolve().as_posix()}"])

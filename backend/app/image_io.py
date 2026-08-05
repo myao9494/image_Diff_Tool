@@ -6,6 +6,7 @@ import io
 import json
 import math
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -244,9 +245,10 @@ def _rasterize_tiff(content: bytes, selected_pages: set[int] | None) -> list[Ras
 
 def _rasterize_svg(content: bytes) -> Image.Image:
     errors = []
+    raster_content = _prepare_svg_for_rasterization(content)
     try:
         import cairosvg
-        png = cairosvg.svg2png(bytestring=content, background_color="white")
+        png = cairosvg.svg2png(bytestring=raster_content, background_color="white")
         return _load_pil_image(png, "SVG")
     except Exception as exc:
         errors.append(f"CairoSVG: {exc}")
@@ -254,7 +256,7 @@ def _rasterize_svg(content: bytes) -> Image.Image:
     try:
         import fitz
 
-        with fitz.open(stream=content, filetype="svg") as doc:
+        with fitz.open(stream=raster_content, filetype="svg") as doc:
             if len(doc) < 1:
                 raise ConversionError("SVG has no pages")
             page = doc[0]
@@ -267,6 +269,44 @@ def _rasterize_svg(content: bytes) -> Image.Image:
         errors.append(f"PyMuPDF: {exc}")
 
     raise ConversionError("Could not convert SVG. " + "; ".join(errors))
+
+
+def _prepare_svg_for_rasterization(content: bytes) -> bytes:
+    """Make draw.io's HTML text fallback usable by SVG rasterizers.
+
+    draw.io exports labels as a ``foreignObject`` plus an SVG ``text`` fallback
+    inside ``switch``. Rasterizers used by this backend do not consistently
+    support the HTML branch and can therefore render a label as blank. Removing
+    that branch lets the portable SVG fallback be selected.
+    """
+    if b"foreignObject" not in content:
+        return content
+
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return content
+
+    changed = False
+    for parent in root.iter():
+        if _svg_local_name(parent.tag) != "switch":
+            continue
+        children = list(parent)
+        has_fallback = any(_svg_local_name(child.tag) != "foreignObject" for child in children)
+        if not has_fallback:
+            continue
+        for child in children:
+            if _svg_local_name(child.tag) == "foreignObject":
+                parent.remove(child)
+                changed = True
+
+    if not changed:
+        return content
+    return ET.tostring(root, encoding="utf-8")
+
+
+def _svg_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
 
 
 def _rasterize_excalidraw(content: bytes, markdown: bool) -> tuple[Image.Image, tuple[str, ...]]:
