@@ -8,10 +8,11 @@ import math
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 
 WHITE = (255, 255, 255, 255)
@@ -20,6 +21,7 @@ MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_PAGE_COUNT = 60
 MAX_RASTER_PIXELS = 90_000_000
 MAX_TOTAL_RASTER_PIXELS = 180_000_000
+LZ_STRING_BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 
 
 @dataclass(frozen=True)
@@ -287,18 +289,27 @@ def _prepare_svg_for_rasterization(content: bytes) -> bytes:
     except ET.ParseError:
         return content
 
-    changed = False
+    changed = _normalize_svg_light_dark_colors(root)
     for parent in root.iter():
         if _svg_local_name(parent.tag) != "switch":
             continue
         children = list(parent)
-        has_fallback = any(_svg_local_name(child.tag) != "foreignObject" for child in children)
-        if not has_fallback:
-            continue
+        inserted_texts: list[ET.Element] = []
         for child in children:
             if _svg_local_name(child.tag) == "foreignObject":
+                replacement = _drawio_foreign_object_text(child)
+                if replacement is not None:
+                    parent.insert(list(parent).index(child), replacement)
+                    inserted_texts.append(replacement)
                 parent.remove(child)
                 changed = True
+        if inserted_texts:
+            namespace = parent.tag.split("}", 1)[0] + "}" if "}" in parent.tag else ""
+            parent.tag = f"{namespace}g"
+            for child in list(parent):
+                if _svg_local_name(child.tag) == "text" and child not in inserted_texts:
+                    parent.remove(child)
+                    changed = True
 
     if not changed:
         return content
@@ -307,6 +318,167 @@ def _prepare_svg_for_rasterization(content: bytes) -> bytes:
 
 def _svg_local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def _normalize_svg_light_dark_colors(root: ET.Element) -> bool:
+    changed = False
+    for element in root.iter():
+        for name, value in list(element.attrib.items()):
+            normalized = _replace_light_dark_css(value)
+            if normalized != value:
+                element.set(name, normalized)
+                changed = True
+    return changed
+
+
+def _replace_light_dark_css(value: str) -> str:
+    marker = "light-dark("
+    result = value
+    while marker in result:
+        start = result.find(marker)
+        index = start + len(marker)
+        depth = 0
+        comma = None
+        end = None
+        while index < len(result):
+            char = result[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                if depth == 0:
+                    end = index
+                    break
+                depth -= 1
+            elif char == "," and depth == 0 and comma is None:
+                comma = index
+            index += 1
+        if comma is None or end is None:
+            break
+        first_color = result[start + len(marker) : comma].strip()
+        result = result[:start] + first_color + result[end + 1 :]
+    return result
+
+
+def _drawio_foreign_object_text(foreign_object: ET.Element) -> ET.Element | None:
+    lines = _foreign_object_lines(foreign_object)
+    if not any(line for line in lines):
+        return None
+    outer = next(iter(foreign_object), None)
+    if outer is None:
+        return None
+    outer_style = _parse_css_style(outer.attrib.get("style", ""))
+    text_element = _deepest_text_element(outer)
+    text_style = _parse_css_style(text_element.attrib.get("style", "")) if text_element is not None else {}
+    font_size = _css_pixels(text_style.get("font-size"), 12.0)
+    line_height_value = text_style.get("line-height", "1.2")
+    line_height = _css_pixels(line_height_value, font_size * 1.2)
+    if line_height_value and not line_height_value.endswith("px"):
+        try:
+            line_height = float(line_height_value) * font_size
+        except ValueError:
+            pass
+    margin_left = _css_pixels(outer_style.get("margin-left"), 0.0)
+    padding_top = _css_pixels(outer_style.get("padding-top"), 0.0)
+    width = _css_pixels(outer_style.get("width"), 0.0)
+    justify = outer_style.get("justify-content", "")
+    if "center" in justify:
+        x = margin_left + (width / 2 if width > 1 else 0)
+        anchor = "middle"
+    elif "flex-end" in justify or "right" in text_style.get("text-align", ""):
+        x = margin_left + width
+        anchor = "end"
+    else:
+        x = margin_left
+        anchor = "start"
+    align = outer_style.get("align-items", "")
+    if "center" in align:
+        first_y = padding_top - ((len(lines) - 1) * line_height / 2) + font_size * 0.35
+    elif "flex-end" in align:
+        first_y = padding_top - ((len(lines) - 1) * line_height)
+    else:
+        first_y = padding_top + font_size
+
+    svg_ns = "http://www.w3.org/2000/svg"
+    text = ET.Element(f"{{{svg_ns}}}text", {
+        "x": _svg_number(x),
+        "y": _svg_number(first_y),
+        "fill": _first_light_dark_color(text_style.get("color", "#000000")),
+        "font-family": text_style.get("font-family", "Helvetica, Arial, sans-serif"),
+        "font-size": _svg_number(font_size),
+        "text-anchor": anchor,
+    })
+    for index, line in enumerate(lines):
+        tspan = ET.SubElement(text, f"{{{svg_ns}}}tspan", {"x": _svg_number(x)})
+        if index:
+            tspan.set("dy", _svg_number(line_height))
+        tspan.text = line or " "
+    return text
+
+
+def _foreign_object_lines(foreign_object: ET.Element) -> list[str]:
+    block_tags = {"div", "p", "br"}
+    lines: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        value = "".join(current).strip()
+        if value or not lines:
+            lines.append(value)
+        current.clear()
+
+    def walk(element: ET.Element, *, root: bool = False) -> None:
+        name = _svg_local_name(element.tag).lower()
+        is_block = not root and name in block_tags
+        if is_block and current:
+            flush()
+        if element.text:
+            current.append(element.text)
+        for child in element:
+            if _svg_local_name(child.tag).lower() == "br":
+                flush()
+            else:
+                walk(child)
+            if child.tail:
+                current.append(child.tail)
+        if is_block and current:
+            flush()
+
+    walk(foreign_object, root=True)
+    if current:
+        flush()
+    while len(lines) > 1 and not lines[0]:
+        lines.pop(0)
+    return lines
+
+
+def _deepest_text_element(root: ET.Element) -> ET.Element | None:
+    candidates = [element for element in root.iter() if (element.text or "").strip()]
+    return candidates[-1] if candidates else root
+
+
+def _parse_css_style(style: str) -> dict[str, str]:
+    result = {}
+    for declaration in style.split(";"):
+        if ":" in declaration:
+            name, value = declaration.split(":", 1)
+            result[name.strip().lower()] = value.strip()
+    return result
+
+
+def _css_pixels(value: str | None, default: float) -> float:
+    if not value:
+        return default
+    match = re.match(r"[-+]?\d+(?:\.\d+)?", value)
+    return float(match.group(0)) if match else default
+
+
+def _first_light_dark_color(value: str) -> str:
+    match = re.match(r"light-dark\(\s*([^,()]+)", value)
+    return match.group(1).strip() if match else value
+
+
+def _svg_number(value: float) -> str:
+    return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
 def _rasterize_excalidraw(content: bytes, markdown: bool) -> tuple[Image.Image, tuple[str, ...]]:
@@ -323,11 +495,11 @@ def _rasterize_excalidraw(content: bytes, markdown: bool) -> tuple[Image.Image, 
         _validate_raster_dimensions(width, height, "Excalidraw canvas")
         offset_x = pad - x0
         offset_y = pad - y0
-        canvas = Image.new("RGBA", (width, height), WHITE)
+        canvas = Image.new("RGBA", (width, height), (255, 255, 255, 0))
         drawable_elements = [_translated_element(element, offset_x, offset_y) for element in elements]
     else:
         _validate_raster_dimensions(DEFAULT_CANVAS[0], DEFAULT_CANVAS[1], "Excalidraw canvas")
-        canvas = Image.new("RGBA", DEFAULT_CANVAS, WHITE)
+        canvas = Image.new("RGBA", DEFAULT_CANVAS, (255, 255, 255, 0))
         drawable_elements = elements
     draw = ImageDraw.Draw(canvas)
 
@@ -335,15 +507,19 @@ def _rasterize_excalidraw(content: bytes, markdown: bool) -> tuple[Image.Image, 
         _draw_excalidraw_element(draw, element)
 
     bg = app_state.get("viewBackgroundColor") or "#ffffff"
-    if bg != "#ffffff":
-        background = Image.new("RGBA", canvas.size, _hex_to_rgba(bg))
-        background.alpha_composite(canvas)
-        canvas = background
+    background = Image.new("RGBA", canvas.size, _hex_to_rgba(bg))
+    background.alpha_composite(canvas)
+    canvas = background
     return normalize_page_image(canvas), warnings
 
 
 def _extract_excalidraw_json(content: bytes) -> dict:
     text = content.decode("utf-8", errors="ignore")
+    compressed = re.search(r"```compressed-json\s*(.*?)\s*```", text, flags=re.S)
+    if compressed:
+        decoded = _decompress_lz_string_base64(compressed.group(1))
+        if decoded:
+            return json.loads(decoded)
     fenced = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.S)
     if fenced:
         return json.loads(fenced.group(1))
@@ -351,6 +527,93 @@ def _extract_excalidraw_json(content: bytes) -> dict:
     if raw:
         return json.loads(raw.group(1))
     raise ConversionError("Could not find Excalidraw JSON in markdown")
+
+
+def _decompress_lz_string_base64(value: str) -> str | None:
+    compressed = "".join(value.split())
+    if not compressed:
+        return ""
+    reverse = {char: index for index, char in enumerate(LZ_STRING_BASE64_ALPHABET)}
+    try:
+        return _lz_string_decompress(len(compressed), 32, lambda index: reverse[compressed[index]])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _lz_string_decompress(length: int, reset_value: int, get_next_value) -> str | None:
+    dictionary: list[str | int | None] = [0, 1, 2]
+    enlarge_in = 4
+    dict_size = 4
+    num_bits = 3
+    data_value = get_next_value(0)
+    data_position = reset_value
+    data_index = 1
+
+    def read_bits(bit_count: int) -> int:
+        nonlocal data_value, data_position, data_index
+        bits = 0
+        power = 1
+        max_power = 1 << bit_count
+        while power != max_power:
+            result_bit = data_value & data_position
+            data_position >>= 1
+            if data_position == 0:
+                data_position = reset_value
+                data_value = get_next_value(data_index) if data_index < length else 0
+                data_index += 1
+            if result_bit:
+                bits |= power
+            power <<= 1
+        return bits
+
+    next_value = read_bits(2)
+    if next_value == 0:
+        char = chr(read_bits(8))
+    elif next_value == 1:
+        char = chr(read_bits(16))
+    elif next_value == 2:
+        return ""
+    else:
+        return None
+    dictionary.append(char)
+    word = char
+    result = [char]
+
+    while data_index <= length:
+        code = read_bits(num_bits)
+        if code == 0:
+            dictionary.append(chr(read_bits(8)))
+            dict_size += 1
+            code = dict_size - 1
+            enlarge_in -= 1
+        elif code == 1:
+            dictionary.append(chr(read_bits(16)))
+            dict_size += 1
+            code = dict_size - 1
+            enlarge_in -= 1
+        elif code == 2:
+            return "".join(result)
+
+        if enlarge_in == 0:
+            enlarge_in = 1 << num_bits
+            num_bits += 1
+
+        if code < len(dictionary) and isinstance(dictionary[code], str):
+            entry = dictionary[code]
+        elif code == dict_size:
+            entry = word + word[0]
+        else:
+            return None
+        result.append(entry)
+        dictionary.append(word + entry[0])
+        dict_size += 1
+        enlarge_in -= 1
+        word = entry
+
+        if enlarge_in == 0:
+            enlarge_in = 1 << num_bits
+            num_bits += 1
+    return None
 
 
 def _excalidraw_warnings(elements: list[dict]) -> tuple[str, ...]:
@@ -396,7 +659,26 @@ def _draw_excalidraw_element(draw: ImageDraw.ImageDraw, element: dict) -> None:
             draw.line(pts, fill=line_color, width=stroke, joint="curve")
     elif kind == "text":
         text = element.get("text") or ""
-        draw.multiline_text((x, y), text, fill=line_color, spacing=4)
+        font_size = max(8, int(round(_float_or_zero(element.get("fontSize")) or 20)))
+        draw.multiline_text((x, y), text, fill=line_color, font=_excalidraw_font(font_size), spacing=max(4, font_size // 5))
+
+
+@lru_cache(maxsize=32)
+def _excalidraw_font(size: int) -> ImageFont.ImageFont:
+    candidates = (
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    )
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default(size=size)
 
 
 def _translated_element(element: dict, offset_x: float, offset_y: float) -> dict:

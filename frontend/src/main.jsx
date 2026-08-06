@@ -13,7 +13,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Clipboard,
+  Download,
   ExternalLink,
+  FileText,
   FolderGit2,
   FolderOpen,
   ImageUp,
@@ -25,6 +27,7 @@ import {
   PanelTopOpen,
   RefreshCw,
   ScanSearch,
+  Settings2,
   X,
   ZoomIn,
   ZoomOut,
@@ -44,6 +47,9 @@ const MEMO_DB_NAME = "visual-diff-memo";
 const MEMO_DB_STORE = "payloads";
 const MEMO_STORAGE_KEY = "visual-diff-memo-fallback";
 const CLIPBOARD_IMAGE_SCALE = 2;
+const DEFAULT_TEXT_EXTENSIONS = [".md", ".txt", ".csv", ".json", ".yaml", ".yml"];
+const GIT_EXTENSION_STORAGE_KEY = "visual-diff-git-text-extensions";
+const GIT_TEXT_MEMO_STORAGE_KEY = "visual-diff-git-text-memos";
 const MEMO_DEFAULTS = {
   text: "めも",
   opacity: 60,
@@ -65,6 +71,9 @@ const MEMO_EXTRA_LEADER_DEFAULT = {
 
 function App() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [extensionSettingsOpen, setExtensionSettingsOpen] = useState(false);
+  const [textExtensions, setTextExtensions] = useState(loadTextExtensions);
+  const [extensionDraft, setExtensionDraft] = useState(() => loadTextExtensions().join(", "));
   const [activeTab, setActiveTab] = useState("files");
   const [left, setLeft] = useState(null);
   const [right, setRight] = useState(null);
@@ -83,6 +92,11 @@ function App() {
   const [gitInfo, setGitInfo] = useState(null);
   const [gitIndex, setGitIndex] = useState(0);
   const [gitResult, setGitResult] = useState(null);
+  const [gitItem, setGitItem] = useState(null);
+  const [gitTextMemos, setGitTextMemos] = useState(loadGitTextMemos);
+  const [gitExportExcluded, setGitExportExcluded] = useState([]);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportNotice, setExportNotice] = useState("");
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState("");
   const requestIdRef = useRef(0);
@@ -91,7 +105,13 @@ function App() {
 
   const canCompare = Boolean(left?.file instanceof File && right?.file instanceof File);
   const comparableGitFiles = useMemo(() => (gitInfo?.files ?? []).filter((file) => file.comparable), [gitInfo]);
+  const exportableGitFiles = useMemo(
+    () => comparableGitFiles.filter((file) => !gitExportExcluded.includes(file.path)),
+    [comparableGitFiles, gitExportExcluded],
+  );
   const currentGitFile = comparableGitFiles[gitIndex] ?? null;
+  const currentTextMemoKey = currentGitFile && gitInfo ? gitMemoKey(gitInfo.repo_root, currentGitFile.path) : "";
+  const currentTextMemo = currentTextMemoKey ? gitTextMemos[currentTextMemoKey] ?? "" : "";
   const activeResult = activeTab === "git" ? gitResult : result;
   const leftPreviewImage = left?.preview ? toDataUri(left.preview) : null;
   const rightPreviewImage = right?.preview ? toDataUri(right.preview) : null;
@@ -103,10 +123,10 @@ function App() {
     return toDataUri(activeResult.overlay);
   }, [activeResult, view]);
   const leftImage = useMemo(() => {
-    if (!activeResult) return activeTab === "git" ? null : leftPreviewImage;
+    if (!activeResult) return activeTab === "git" ? (gitItem?.image_head ? toDataUri(gitItem.image_head) : null) : leftPreviewImage;
     if (view === "original") return toDataUri(activeResult.image_a_original ?? activeResult.image_a);
     return toDataUri(activeResult.image_a);
-  }, [activeResult, activeTab, leftPreviewImage, view]);
+  }, [activeResult, activeTab, gitItem, leftPreviewImage, view]);
   const rightPaneTitle = activeResult
     ? view === "original"
       ? "B 元画像"
@@ -266,10 +286,34 @@ function App() {
     return () => window.removeEventListener("keydown", handleResultViewKeys);
   }, [activeResult]);
 
+  useEffect(() => {
+    persistLocalStorage(GIT_EXTENSION_STORAGE_KEY, textExtensions);
+  }, [textExtensions]);
+
+  useEffect(() => {
+    persistLocalStorage(GIT_TEXT_MEMO_STORAGE_KEY, gitTextMemos);
+  }, [gitTextMemos]);
+
   function selectCategory(nextCategory) {
     setCategory(nextCategory);
     invalidateComparison();
-    setGitResult(null);
+    if (activeTab === "git" && currentGitFile?.kind === "image" && currentGitFile.diffable) {
+      const requestId = gitRequestIdRef.current + 1;
+      gitRequestIdRef.current = requestId;
+      setGitResult(null);
+      setGitItem(null);
+      setGitBusy(true);
+      setGitError("");
+      compareGitFile(currentGitFile, requestId, nextCategory)
+        .catch((err) => {
+          if (requestId === gitRequestIdRef.current) setGitError(err.message);
+        })
+        .finally(() => {
+          if (requestId === gitRequestIdRef.current) setGitBusy(false);
+        });
+    } else {
+      setGitResult(null);
+    }
   }
 
   function selectAnchorRegion(region) {
@@ -370,11 +414,20 @@ function App() {
   }
 
   return (
-    <main>
+    <main className={activeTab === "git" && currentGitFile?.kind === "text" ? "text-diff-mode" : ""}>
       <header className="app-header">
-        <div>
+        <div className="header-main">
           <h1>Visual Diff Tool</h1>
-          <p>PNG / SVG / PDF / TIFF / Excalidraw</p>
+          <nav className="mode-tabs" aria-label="diff mode">
+            <button className={activeTab === "files" ? "active" : ""} onClick={() => setActiveTab("files")}>
+              <ImageUp size={18} />
+              ファイル差分
+            </button>
+            <button className={activeTab === "git" ? "active" : ""} onClick={() => setActiveTab("git")}>
+              <FolderGit2 size={18} />
+              git差分
+            </button>
+          </nav>
         </div>
         <div className="header-menu">
           <button className="menu-button" type="button" aria-label="メニュー" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>
@@ -382,6 +435,48 @@ function App() {
           </button>
           {menuOpen && (
             <div className="hamburger-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => setExtensionSettingsOpen((open) => !open)}
+              >
+                <Settings2 size={18} />
+                Git対象拡張子
+                <span>{extensionSettingsOpen ? "閉じる" : "設定"}</span>
+              </button>
+              {extensionSettingsOpen && (
+                <div className="extension-settings">
+                  <label>
+                    <span>テキスト拡張子（カンマ区切り）</span>
+                    <textarea value={extensionDraft} onChange={(event) => setExtensionDraft(event.target.value)} />
+                  </label>
+                  <small>画像形式は常に対象です。設定はこのブラウザに保存されます。</small>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = normalizeTextExtensions(extensionDraft);
+                        setTextExtensions(next);
+                        setExtensionDraft(next.join(", "));
+                        setGitInfo(null);
+                        setGitResult(null);
+                        setGitItem(null);
+                      }}
+                    >
+                      適用
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExtensionDraft(DEFAULT_TEXT_EXTENSIONS.join(", "));
+                        setTextExtensions(DEFAULT_TEXT_EXTENSIONS);
+                      }}
+                    >
+                      初期値
+                    </button>
+                  </div>
+                </div>
+              )}
               <button
                 type="button"
                 role="menuitem"
@@ -398,17 +493,6 @@ function App() {
           )}
         </div>
       </header>
-
-      <nav className="mode-tabs" aria-label="diff mode">
-        <button className={activeTab === "files" ? "active" : ""} onClick={() => setActiveTab("files")}>
-          <ImageUp size={18} />
-          ファイル差分
-        </button>
-        <button className={activeTab === "git" ? "active" : ""} onClick={() => setActiveTab("git")}>
-          <FolderGit2 size={18} />
-          git差分
-        </button>
-      </nav>
 
       <section className="toolbar" aria-label="compare settings">
         {activeTab === "files" ? (
@@ -449,7 +533,18 @@ function App() {
         ) : (
           <GitToolbar
             folder={gitFolder}
-            setFolder={setGitFolder}
+            setFolder={(value) => {
+              gitRequestIdRef.current += 1;
+              setGitFolder(value);
+              setGitInfo(null);
+              setGitIndex(0);
+              setGitResult(null);
+              setGitItem(null);
+              setGitExportExcluded([]);
+              setGitError("");
+              setExportNotice("");
+              setGitBusy(false);
+            }}
             info={gitInfo}
             files={comparableGitFiles}
             currentFile={currentGitFile}
@@ -459,9 +554,22 @@ function App() {
             onPrevious={() => selectGitIndex(gitIndex - 1)}
             onNext={() => selectGitIndex(gitIndex + 1)}
             onSelect={(index) => selectGitIndex(index)}
+            onMemo={() => openGitMemo()}
+            canMemo={currentGitFile?.kind === "image" && Boolean(gitResult || gitItem?.image_head || gitItem?.image_current)}
+            onExport={exportGitHtml}
+            canExport={Boolean(exportableGitFiles.length)}
+            exportBusy={exportBusy}
+            includeCurrent={Boolean(currentGitFile && !gitExportExcluded.includes(currentGitFile.path))}
+            onIncludeCurrent={(included) => {
+              if (!currentGitFile) return;
+              setGitExportExcluded((paths) => included
+                ? paths.filter((path) => path !== currentGitFile.path)
+                : [...new Set([...paths, currentGitFile.path])]);
+            }}
+            exportCount={exportableGitFiles.length}
           />
         )}
-        <div className="control">
+        {(activeTab === "files" || currentGitFile?.kind === "image") && <div className="control">
           <span>カテゴリ</span>
           <div className="segmented">
             {CATEGORIES.map((item) => (
@@ -470,8 +578,8 @@ function App() {
               </button>
             ))}
           </div>
-        </div>
-        <div className="control">
+        </div>}
+        {(activeTab === "files" || currentGitFile?.kind === "image") && <div className="control">
           <span>表示</span>
           <div className="segmented">
             {VIEWS.map((item) => (
@@ -480,8 +588,8 @@ function App() {
               </button>
             ))}
           </div>
-        </div>
-        <label className="control threshold-control">
+        </div>}
+        {(activeTab === "files" || currentGitFile?.kind === "image") && <label className="control threshold-control">
           <span>差分しきい値 {diffThreshold.toFixed(2)}</span>
           <input
             type="range"
@@ -491,15 +599,15 @@ function App() {
             value={diffThreshold}
             onChange={(event) => setDiffThreshold(Number(event.target.value))}
           />
-        </label>
-        <div className="control anchor-control">
+        </label>}
+        {activeTab === "files" && <div className="control anchor-control">
           <span>基準領域</span>
           <button className={`anchor-status ${anchorRegion ? "selected" : ""}`} disabled={!left?.regions?.length} onClick={clearAnchorRegion}>
             {anchorRegion ? <X size={16} /> : <MousePointer2 size={16} />}
             {anchorRegion ? `${anchorRegion.label}を使用` : `${left?.regions?.length ?? 0}候補`}
           </button>
-        </div>
-        <div className="icon-group" aria-label="zoom">
+        </div>}
+        {(activeTab === "files" || currentGitFile?.kind === "image") && <div className="icon-group" aria-label="zoom">
           <button title="縮小" onClick={() => setZoom((value) => Math.max(0.25, value - 0.1))}>
             <ZoomOut size={18} />
           </button>
@@ -507,8 +615,10 @@ function App() {
           <button title="拡大" onClick={() => setZoom((value) => Math.min(3, value + 0.1))}>
             <ZoomIn size={18} />
           </button>
-        </div>
+        </div>}
       </section>
+
+      {exportNotice && <div className="notice success">{exportNotice}</div>}
 
       {(activeTab === "git" ? gitError : error) && (
         <div className="notice error">
@@ -531,20 +641,27 @@ function App() {
         </div>
       )}
 
-      <section className="summary">
+      {(activeTab === "files" || currentGitFile?.kind === "image") && <section className="summary">
         <Stat label="差分ピクセル" value={activeResult ? activeResult.diff_pixels.toLocaleString() : "-"} />
         <Stat label="差分率" value={activeResult ? `${(activeResult.diff_ratio * 100).toFixed(3)}%` : "-"} />
         <Stat label="しきい値" value={activeResult ? activeResult.diff_threshold.toFixed(2) : diffThreshold.toFixed(2)} />
         <Stat label="マッチ数" value={activeResult ? `${activeResult.alignment.matches} / ${activeResult.alignment.inliers}` : "-"} />
         <Stat label="矩形" value={activeResult ? activeResult.diff_rects.length : "-"} />
-      </section>
+      </section>}
 
-      <section className="viewer">
+      {activeTab === "git" && currentGitFile?.kind === "text" ? (
+        <TextDiffView
+          file={currentGitFile}
+          item={gitItem}
+          memo={currentTextMemo}
+          onMemoChange={(value) => setGitTextMemos((current) => ({ ...current, [currentTextMemoKey]: value }))}
+        />
+      ) : <section className="viewer">
         <ImagePane
-          title={activeTab === "git" ? "HEAD 1つ前" : "A 基準"}
+          title={activeTab === "git" ? "HEAD" : "A 基準"}
           side="left"
           active={activeSide === "left"}
-          subtitle={activeTab === "git" ? currentGitFile?.path : left?.file?.name}
+          subtitle={activeTab === "git" ? currentGitFile?.head_path : left?.file?.name}
           image={leftImage}
           zoom={zoom}
           regions={activeTab === "git" || (activeResult && view !== "original") ? [] : left?.regions ?? []}
@@ -559,7 +676,7 @@ function App() {
           side="right"
           active={activeSide === "right"}
           subtitle={activeTab === "git" ? currentGitFile?.path : right?.file?.name}
-          image={activeResult ? rightImage : activeTab === "git" ? null : rightPreviewImage}
+          image={activeResult ? rightImage : activeTab === "git" ? (gitItem?.image_current ? toDataUri(gitItem.image_current) : null) : rightPreviewImage}
           zoom={zoom}
           regions={[]}
           selectedRegion={null}
@@ -567,7 +684,7 @@ function App() {
           onPasteImage={pasteImage}
           onDropFile={(file) => loadFile("right", file)}
         />
-      </section>
+      </section>}
     </main>
   );
 
@@ -577,14 +694,16 @@ function App() {
     setGitBusy(true);
     setGitError("");
     setGitResult(null);
+    setGitItem(null);
     try {
-      const info = await postJson("/git/images", { folder: gitFolder });
+      const info = await postJson("/git/files", { folder: gitFolder, text_extensions: textExtensions });
       if (requestId !== gitRequestIdRef.current) return;
       setGitInfo(info);
+      setGitExportExcluded([]);
       const nextFiles = (info.files ?? []).filter((file) => file.comparable);
       setGitIndex(0);
       if (nextFiles[0]) {
-        await compareGitFile(nextFiles[0], requestId);
+        await loadGitFile(nextFiles[0], requestId);
       }
     } catch (err) {
       if (requestId === gitRequestIdRef.current) setGitError(err.message);
@@ -602,8 +721,9 @@ function App() {
     setGitBusy(true);
     setGitError("");
     setGitResult(null);
+    setGitItem(null);
     try {
-      await compareGitFile(comparableGitFiles[wrappedIndex], requestId);
+      await loadGitFile(comparableGitFiles[wrappedIndex], requestId);
     } catch (err) {
       if (requestId === gitRequestIdRef.current) setGitError(err.message);
     } finally {
@@ -611,16 +731,97 @@ function App() {
     }
   }
 
-  async function compareGitFile(file, requestId = gitRequestIdRef.current) {
+  async function compareGitFile(file, requestId = gitRequestIdRef.current, selectedCategory = category) {
     const nextResult = await postJson("/git/diff", {
       folder: gitFolder,
       path: file.path,
       head_path: file.head_path,
-      category,
+      category: selectedCategory,
       diff_threshold: diffThreshold,
     });
     if (requestId === gitRequestIdRef.current) {
       setGitResult(nextResult);
+    }
+  }
+
+  async function loadGitFile(file, requestId = gitRequestIdRef.current) {
+    if (file.kind === "image" && file.diffable) {
+      await compareGitFile(file, requestId);
+      return;
+    }
+    const nextItem = await postJson("/git/item", {
+      folder: gitFolder,
+      text_extensions: textExtensions,
+      include_text: false,
+      ...file,
+    });
+    if (requestId === gitRequestIdRef.current) setGitItem(nextItem);
+  }
+
+  async function openGitMemo() {
+    if (!currentGitFile || !gitInfo) return;
+    const fallbackImage = gitItem?.image_head ?? gitItem?.image_current;
+    const memoResult = gitResult ?? (fallbackImage ? {
+      image_a: gitItem?.image_head ?? fallbackImage,
+      image_b_aligned: gitItem?.image_current ?? fallbackImage,
+    } : null);
+    if (!memoResult) return;
+    const id = gitImageMemoId(gitInfo.repo_root, currentGitFile.path);
+    await openDiffMemoTab(
+      memoResult,
+      { file: { name: `HEAD:${currentGitFile.head_path}` } },
+      { file: { name: currentGitFile.path } },
+      setGitError,
+      id,
+    );
+  }
+
+  async function exportGitHtml() {
+    if (!gitInfo || !exportableGitFiles.length) return;
+    setExportBusy(true);
+    setExportNotice("");
+    setGitError("");
+    try {
+      const entries = [];
+      for (const file of exportableGitFiles) {
+        let data;
+        const isCurrent = file.path === currentGitFile?.path;
+        if (isCurrent && file.kind === "image" && file.diffable && gitResult) {
+          data = gitResult;
+        } else if (isCurrent && gitItem) {
+          data = gitItem;
+        } else if (file.kind === "image" && file.diffable) {
+          data = await postJson("/git/diff", {
+            folder: gitFolder,
+            path: file.path,
+            head_path: file.head_path,
+            category,
+            diff_threshold: diffThreshold,
+          });
+        } else {
+          data = await postJson("/git/item", {
+            folder: gitFolder,
+            text_extensions: textExtensions,
+            include_text: false,
+            ...file,
+          });
+        }
+        let memo = "";
+        let imageMemo = null;
+        if (file.kind === "text") {
+          memo = gitTextMemos[gitMemoKey(gitInfo.repo_root, file.path)] ?? "";
+        } else {
+          imageMemo = await readMemoPayload(gitImageMemoId(gitInfo.repo_root, file.path));
+        }
+        entries.push({ file, data, memo, imageMemo });
+      }
+      const html = await buildStandaloneGitReport(gitInfo, entries);
+      downloadTextFile(html, gitReportFilename(gitInfo.repo_root), "text/html;charset=utf-8");
+      setExportNotice(`HTMLを保存しました（${entries.length}件、外部接続なしで閲覧できます）`);
+    } catch (err) {
+      setGitError(`HTML出力に失敗しました: ${err.message}`);
+    } finally {
+      setExportBusy(false);
     }
   }
 }
@@ -742,7 +943,7 @@ anchor_region: 任意。JSON文字列。例 {"x":0,"y":0,"width":800,"height":60
   "diff_threshold": 0.1,
   "conversion_warnings": []
 }`}
-          notes="AIや外部アプリが最初に使う中心API。localhost/127.0.0.1で呼ばれた場合は、成功後にWebアプリも http://127.0.0.1:8078/?result_id=... 形式で自動表示する。差分の可視化はoverlay、二値的な差分抽出はmask、機械判定はdiff_ratioとdiff_rectsを見る。"
+          notes="AIや外部アプリが最初に使う中心API。result_idが返り、localhost/127.0.0.1で呼ばれた場合は、成功後にWebアプリも http://127.0.0.1:8078/?result_id=... 形式で自動表示する。巨大ペアがキャッシュ上限を超える場合、result_idはnull。差分の可視化はoverlay、二値的な差分抽出はmask、機械判定はdiff_ratioとdiff_rectsを見る。"
         />
 
         <ApiEndpoint
@@ -802,7 +1003,7 @@ file: 保存したい添付ファイル`}
         <ApiEndpoint
           method="POST"
           path="/api/git/images"
-          purpose="指定フォルダのgit差分から、HEAD側と比較できる変更画像を一覧する。"
+          purpose="互換用API。指定フォルダのGit差分から変更画像を一覧する。"
           request={`Content-Type: application/json
 { "folder": "/absolute/path/to/repo/or/subfolder" }`}
           response={`{
@@ -818,7 +1019,38 @@ file: 保存したい添付ファイル`}
     }
   ]
 }`}
-          notes="追加ファイルや削除ファイルなどHEAD側がないものはcomparable=falseになる。リネーム/コピーではpathとhead_pathが異なる場合がある。"
+          notes="追加・削除など両側がそろわない画像はcomparable=falseになる。新しいUIでは画像とテキストを扱う/api/git/filesを使用する。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/git/files"
+          purpose="設定された拡張子に従い、変更画像と変更テキストを追加・削除・未追跡も含めて一覧する。"
+          request={`Content-Type: application/json
+{ "folder": "/absolute/path/to/repo", "text_extensions": [".md", ".txt"] }`}
+          response={`{
+  "repo_root": "/absolute/path/to/repo",
+  "files": [{
+    "path": "guide.md", "head_path": "guide.md", "kind": "text",
+    "change_type": "modified", "has_head": true, "has_current": true,
+    "diffable": true, "comparable": true
+  }]
+}`}
+          notes="画像拡張子は常に対象。text_extensionsは最大50件で、先頭のドットは省略できる。"
+        />
+
+        <ApiEndpoint
+          method="POST"
+          path="/api/git/item"
+          purpose="Git変更ファイルのHEAD側と作業フォルダ側を取得する。テキストでは左右差分行、画像ではPNGプレビューを返す。"
+          request={`Content-Type: application/json
+{
+  "folder": "/absolute/path/to/repo", "path": "guide.md", "head_path": "guide.md",
+  "kind": "text", "has_head": true, "has_current": true,
+  "text_extensions": [".md", ".txt"]
+}`}
+          response="テキストはtext_head、text_current、rows。画像はimage_head、image_currentを返す。"
+          notes="テキストはUTF-8/CP932を読み取り、5 MB・30,000行/片側を上限とする。include_text=falseなら全文フィールドを省略できる。バイナリ内容はテキストとして返さない。"
         />
 
         <ApiEndpoint
@@ -891,8 +1123,15 @@ function GitToolbar({
   onPrevious,
   onNext,
   onSelect,
+  onMemo,
+  canMemo,
+  onExport,
+  canExport,
+  exportBusy,
+  includeCurrent,
+  onIncludeCurrent,
+  exportCount,
 }) {
-  const skipped = (info?.files ?? []).filter((file) => !file.comparable).length;
   return (
     <>
       <label className="git-folder">
@@ -912,7 +1151,7 @@ function GitToolbar({
         読み込み
       </button>
       <div className="git-nav">
-        <button title="前の画像" disabled={!files.length || busy} onClick={onPrevious}>
+        <button title="前のファイル" disabled={!files.length || busy} onClick={onPrevious}>
           <ChevronLeft size={18} />
         </button>
         <select value={files.length ? index : ""} disabled={!files.length || busy} onChange={(event) => onSelect(Number(event.target.value))}>
@@ -923,23 +1162,91 @@ function GitToolbar({
               </option>
             ))
           ) : (
-            <option value="">変更画像なし</option>
+            <option value="">対象ファイルなし</option>
           )}
         </select>
-        <button title="次の画像" disabled={!files.length || busy} onClick={onNext}>
+        <button title="次のファイル" disabled={!files.length || busy} onClick={onNext}>
           <ChevronRight size={18} />
         </button>
         <button title="再読み込み" disabled={!folder || busy} onClick={onLoad}>
           <RefreshCw size={18} />
         </button>
       </div>
+      <button className="primary secondary" disabled={!canMemo || busy} onClick={onMemo}>
+        <MessageSquarePlus size={18} />
+        画像メモ
+      </button>
+      <button className="primary report-button" disabled={!canExport || busy || exportBusy} onClick={onExport}>
+        {exportBusy ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
+        HTML保存
+      </button>
+      <label className={`git-export-toggle ${currentFile ? "" : "disabled"}`}>
+        <input
+          type="checkbox"
+          checked={includeCurrent}
+          disabled={!currentFile || busy || exportBusy}
+          onChange={(event) => onIncludeCurrent(event.target.checked)}
+        />
+        HTMLに含める
+      </label>
       <div className="git-meta">
         <strong>{currentFile?.path ?? "未選択"}</strong>
         <small>
-          {info ? `${files.length}件を比較可能${skipped ? ` / ${skipped}件はHEAD側なし` : ""}` : "git管理フォルダを指定"}
+          {info ? `${files.length}件の変更 / HTML出力 ${exportCount}件` : "git管理フォルダを指定"}
         </small>
       </div>
     </>
+  );
+}
+
+function TextDiffView({ file, item, memo, onMemoChange }) {
+  return (
+    <section className="text-diff-section">
+      <div className="text-diff-heading">
+        <div>
+          <FileText size={20} />
+          <strong>{file.path}</strong>
+          <span className={`change-badge ${file.change_type}`}>{changeTypeLabel(file.change_type)}</span>
+        </div>
+        <label>
+          <textarea
+            aria-label="このファイルのメモ（HTMLへ出力）"
+            title="このファイルのメモ（HTMLへ出力）"
+            value={memo}
+            placeholder="確認事項や変更理由を入力"
+            onChange={(event) => onMemoChange(event.target.value)}
+          />
+        </label>
+      </div>
+      <div className="text-diff-columns" aria-label="テキスト差分">
+        <div className="text-column-title">HEAD: {file.head_path}</div>
+        <div className="text-column-title">作業フォルダ: {file.path}</div>
+        {(item?.rows ?? []).map((row, index) => (
+          <React.Fragment key={`${row.old_number ?? "x"}-${row.new_number ?? "x"}-${index}`}>
+            <DiffCodeCell side="old" row={row} />
+            <DiffCodeCell side="new" row={row} />
+          </React.Fragment>
+        ))}
+        {!item && <div className="text-diff-empty">差分を読み込んでいます。</div>}
+      </div>
+    </section>
+  );
+}
+
+function DiffCodeCell({ side, row }) {
+  const number = side === "old" ? row.old_number : row.new_number;
+  const text = side === "old" ? row.old : row.new;
+  const segments = side === "old" ? row.old_segments : row.new_segments;
+  const className = side === "old"
+    ? row.kind === "delete" || row.kind === "replace" ? "removed" : row.kind === "insert" ? "added-gap" : ""
+    : row.kind === "insert" || row.kind === "replace" ? "added" : row.kind === "delete" ? "removed-gap" : "";
+  return (
+    <div className={`diff-code-cell ${className}`}>
+      <span className="line-number">{number ?? ""}</span>
+      <code>{segments ? segments.map((segment, index) => (
+        <mark key={index} className={segment.changed ? "changed" : ""}>{segment.text}</mark>
+      )) : row.kind === "insert" || row.kind === "delete" ? <mark className="changed">{text ?? ""}</mark> : text ?? ""}</code>
+    </div>
   );
 }
 
@@ -952,10 +1259,14 @@ function MemoDiffApp() {
   const [selectedNoteId, setSelectedNoteId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [notice, setNotice] = useState("");
+  const [panning, setPanning] = useState(false);
   const stageRef = useRef(null);
+  const stageWrapRef = useRef(null);
+  const imageARef = useRef(null);
   const dragRef = useRef(null);
   const leaderDragRef = useRef(null);
   const sliderDragRef = useRef(false);
+  const panDragRef = useRef(null);
   const safeNotes = normalizeMemoNotes(notes);
   const selectedNote = safeNotes.find((note) => note.id === selectedNoteId) ?? null;
 
@@ -964,12 +1275,26 @@ function MemoDiffApp() {
     readMemoPayload(memoPayloadIdFromHash()).then((nextPayload) => {
       if (cancelled) return;
       setPayload(nextPayload);
+      setNotes(normalizeMemoNotes(nextPayload?.notes));
       setLoadingPayload(false);
     });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!payload) return undefined;
+    const timer = window.setTimeout(() => {
+      const rect = stageRef.current?.getBoundingClientRect();
+      storeMemoPayload(memoPayloadIdFromHash(), {
+        ...payload,
+        notes: normalizeMemoNotes(notes),
+        stageSize: rect ? { width: rect.width, height: rect.height } : payload.stageSize ?? null,
+      }).catch(() => setNotice("メモをブラウザに保存できませんでした"));
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [payload, notes]);
 
   useEffect(() => {
     function closeMenu() {
@@ -1000,6 +1325,12 @@ function MemoDiffApp() {
       if (sliderDragRef.current) {
         updateSliderFromPointer(event);
       }
+      if (panDragRef.current && stageWrapRef.current) {
+        const { startX, startY, startLeft, startTop } = panDragRef.current;
+        stageWrapRef.current.scrollLeft = startLeft - (event.clientX - startX);
+        stageWrapRef.current.scrollTop = startTop - (event.clientY - startY);
+        return;
+      }
       if (leaderDragRef.current) {
         const { id, lineId, rect, point } = leaderDragRef.current;
         const x = clamp(event.clientX - rect.left, -420, 620);
@@ -1020,6 +1351,10 @@ function MemoDiffApp() {
       dragRef.current = null;
       leaderDragRef.current = null;
       sliderDragRef.current = false;
+      if (panDragRef.current) {
+        panDragRef.current = null;
+        setPanning(false);
+      }
     }
     window.addEventListener("pointermove", moveNote);
     window.addEventListener("pointerup", stopDrag);
@@ -1110,6 +1445,21 @@ function MemoDiffApp() {
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
+  function startPan(event) {
+    if (event.button !== 0 && event.button !== 1) return;
+    if (event.target.closest(".memo-note, .comparison-handle, button, textarea, input, select")) return;
+    if (!stageWrapRef.current) return;
+    event.preventDefault();
+    panDragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: stageWrapRef.current.scrollLeft,
+      startTop: stageWrapRef.current.scrollTop,
+    };
+    setPanning(true);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
   function updateSliderFromPointer(event) {
     if (!stageRef.current) return;
     const rect = stageRef.current.getBoundingClientRect();
@@ -1117,11 +1467,38 @@ function MemoDiffApp() {
   }
 
   function zoomMemoWithWheel(event) {
-    if (!event.ctrlKey && !event.metaKey && !event.altKey) return;
     if (event.target.closest("textarea, input, button, select")) return;
+    // macOS trackpad pinch is delivered as a wheel event with ctrl/meta/alt.
+    // A normal wheel event is intentionally left to the scroll container so
+    // two-finger swipes pan the image instead of changing its zoom.
+    if (!event.ctrlKey && !event.metaKey && !event.altKey) return;
     event.preventDefault();
     const direction = event.deltaY < 0 ? 1 : -1;
-    setMemoZoom((current) => clamp(current + direction * 5, 50, 300));
+    setMemoZoom((current) => clamp(current + direction * 5, 10, 300));
+  }
+
+  function fitMemoToViewport() {
+    const image = imageARef.current;
+    const wrap = stageWrapRef.current;
+    if (!image?.naturalWidth || !image?.naturalHeight || !wrap) {
+      setMemoZoom(100);
+      return;
+    }
+    const styles = window.getComputedStyle(wrap);
+    const horizontalPadding = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+    const verticalPadding = parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+    const availableWidth = Math.max(1, wrap.clientWidth - horizontalPadding);
+    const availableHeight = Math.max(1, wrap.clientHeight - verticalPadding);
+    const baseWidth = availableWidth;
+    const baseHeight = baseWidth * (image.naturalHeight / image.naturalWidth);
+    const fitPercent = Math.min(100, (availableHeight / baseHeight) * 100);
+    setMemoZoom(Math.round(clamp(fitPercent, 10, 100)));
+    window.requestAnimationFrame(() => {
+      if (stageWrapRef.current) {
+        stageWrapRef.current.scrollLeft = 0;
+        stageWrapRef.current.scrollTop = 0;
+      }
+    });
   }
 
   async function copyMemoImage(side) {
@@ -1169,8 +1546,11 @@ function MemoDiffApp() {
         </label>
         <label className="control slider-control">
           <span>表示サイズ {memoZoom}%</span>
-          <input type="range" min="50" max="300" value={memoZoom} onChange={(event) => setMemoZoom(Number(event.target.value))} />
+          <input type="range" min="10" max="300" value={memoZoom} onChange={(event) => setMemoZoom(Number(event.target.value))} />
         </label>
+        <button type="button" className="memo-fit-button" onClick={fitMemoToViewport}>
+          画面に合わせる
+        </button>
         {notice && <span className="copy-notice">{notice}</span>}
       </section>
 
@@ -1282,9 +1662,9 @@ function MemoDiffApp() {
         </section>
       )}
 
-      <section className="memo-stage-wrap" onWheel={zoomMemoWithWheel}>
-        <div className="memo-stage" ref={stageRef} style={{ width: `min(${memoZoom}%, 1280px)` }}>
-          <img className="memo-image memo-image-a" src={imageA} alt="画像A" draggable="false" />
+      <section className="memo-stage-wrap" ref={stageWrapRef} onWheel={zoomMemoWithWheel}>
+        <div className={`memo-stage ${panning ? "panning" : ""}`} ref={stageRef} onPointerDown={startPan} style={{ width: `${memoZoom}%` }}>
+          <img className="memo-image memo-image-a" ref={imageARef} src={imageA} alt="画像A" draggable="false" />
           <div className="memo-image-b-clip" style={{ clipPath: `inset(0 0 0 ${slider}%)` }}>
             <img className="memo-image" src={imageB} alt="画像B" draggable="false" />
           </div>
@@ -1611,20 +1991,170 @@ function isSameRegion(a, b) {
   );
 }
 
-async function openDiffMemoTab(result, left, right, onError) {
+async function openDiffMemoTab(result, left, right, onError, fixedId = null) {
+  const id = fixedId ?? (crypto.randomUUID?.() ?? String(Date.now()));
+  const existing = fixedId ? await readMemoPayload(id) : null;
   const payload = {
     imageA: result.image_a,
     imageB: result.image_b_aligned,
     nameA: left?.file?.name,
     nameB: right?.file?.name,
+    notes: existing?.notes ?? [],
+    stageSize: existing?.stageSize ?? null,
   };
-  const id = crypto.randomUUID?.() ?? String(Date.now());
   try {
     await storeMemoPayload(id, payload);
     window.open(`${window.location.origin}${window.location.pathname}#diff-memo/${id}`, "_blank", "noopener,noreferrer");
   } catch (err) {
     onError?.(`差分メモを開けませんでした: ${err.message}`);
   }
+}
+
+function loadTextExtensions() {
+  try {
+    return normalizeTextExtensions(JSON.parse(localStorage.getItem(GIT_EXTENSION_STORAGE_KEY) || "null") ?? DEFAULT_TEXT_EXTENSIONS);
+  } catch {
+    return [...DEFAULT_TEXT_EXTENSIONS];
+  }
+}
+
+function normalizeTextExtensions(value) {
+  const items = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
+  return [...new Set(items.map((item) => String(item).trim().toLowerCase()).filter(Boolean).map((item) => item.startsWith(".") ? item : `.${item}`)
+    .filter((item) => /^\.[a-z0-9][a-z0-9._+-]{0,15}$/.test(item)))].slice(0, 50);
+}
+
+function loadGitTextMemos() {
+  try {
+    const value = JSON.parse(localStorage.getItem(GIT_TEXT_MEMO_STORAGE_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistLocalStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gitMemoKey(repo, path) {
+  return `${repo || "repo"}::${path}`;
+}
+
+function gitImageMemoId(repo, path) {
+  const source = gitMemoKey(repo, path);
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `git-image-${(hash >>> 0).toString(16)}`;
+}
+
+function changeTypeLabel(type) {
+  return ({ modified: "変更", added: "追加", deleted: "削除", untracked: "未追跡", renamed: "名前変更", copied: "コピー" })[type] ?? type;
+}
+
+function gitReportFilename(repo) {
+  const name = String(repo || "repository").split(/[\\/]/).filter(Boolean).pop() || "repository";
+  const stamp = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  return `${name}-diff-${stamp}.html`;
+}
+
+function downloadTextFile(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function buildStandaloneGitReport(info, entries) {
+  const sections = [];
+  for (const entry of entries) {
+    sections.push(entry.file.kind === "text" ? buildTextReportSection(entry) : await buildImageReportSection(entry));
+  }
+  const generated = new Intl.DateTimeFormat("ja-JP", { dateStyle: "long", timeStyle: "medium" }).format(new Date());
+  return `<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
+<title>差分レポート - ${escapeHtml(info.repo_root)}</title><style>${standaloneReportCss()}</style></head>
+<body><header><h1>差分レポート</h1><dl><div><dt>リポジトリ</dt><dd>${escapeHtml(info.repo_root)}</dd></div><div><dt>出力日時</dt><dd>${escapeHtml(generated)}</dd></div><div><dt>変更ファイル</dt><dd>${entries.length}件</dd></div></dl></header>
+<main>${sections.join("\n")}</main><footer>Visual Diff Tool — このHTMLは画像・CSSを内包した自己完結ファイルです。</footer></body></html>`;
+}
+
+function buildTextReportSection({ file, data, memo }) {
+  const rows = (data.rows ?? []).map((row) => `<div class="code-cell ${oldCellClass(row)}"${reportGapStyle(row, "old")}><span>${row.old_number ?? ""}</span><code>${reportLineHtml(row, "old")}</code></div><div class="code-cell ${newCellClass(row)}"${reportGapStyle(row, "new")}><span>${row.new_number ?? ""}</span><code>${reportLineHtml(row, "new")}</code></div>`).join("");
+  return `<section><h2>${escapeHtml(file.path)} <b class="badge ${escapeHtml(file.change_type)}">${escapeHtml(changeTypeLabel(file.change_type))}</b></h2>${memo.trim() ? `<aside><strong>メモ</strong><p>${escapeHtml(memo).replaceAll("\n", "<br>")}</p></aside>` : ""}<div class="diff-grid"><h3>HEAD: ${escapeHtml(file.head_path)}</h3><h3>作業フォルダ: ${escapeHtml(file.path)}</h3>${rows || '<p class="empty-report">差分行はありません。</p>'}</div></section>`;
+}
+
+async function buildImageReportSection({ file, data, imageMemo }) {
+  const head = data.image_a ?? data.image_head ?? null;
+  const current = data.image_b_aligned ?? data.image_current ?? null;
+  const notes = normalizeMemoNotes(imageMemo?.notes);
+  const annotateHead = !current && Boolean(head);
+  const headSrc = head ? (annotateHead && notes.length ? await renderImageWithNotesDataUri(toDataUri(head), notes, imageMemo?.stageSize) : toDataUri(head)) : null;
+  const currentSrc = current ? (notes.length ? await renderImageWithNotesDataUri(toDataUri(current), notes, imageMemo?.stageSize) : toDataUri(current)) : null;
+  const panels = [
+    ["HEAD", headSrc],
+    ["作業フォルダ", currentSrc],
+    ["差分オーバーレイ", data.overlay ? toDataUri(data.overlay) : null],
+  ].filter(([, src]) => src).map(([label, src]) => `<figure><figcaption>${label}</figcaption><img src="${src}" alt="${label}"></figure>`).join("");
+  const memoList = notes.length ? `<aside><strong>画像メモ</strong><ol>${notes.map((note) => `<li>${escapeHtml(note.text)}</li>`).join("")}</ol></aside>` : "";
+  return `<section><h2>${escapeHtml(file.path)} <b class="badge ${escapeHtml(file.change_type)}">${escapeHtml(changeTypeLabel(file.change_type))}</b></h2>${memoList}<div class="image-grid">${panels || '<p class="empty-report">表示できる画像がありません。</p>'}</div></section>`;
+}
+
+function oldCellClass(row) {
+  return row.kind === "delete" || row.kind === "replace" ? "removed" : row.kind === "insert" ? "added-gap" : "";
+}
+
+function newCellClass(row) {
+  return row.kind === "insert" || row.kind === "replace" ? "added" : row.kind === "delete" ? "removed-gap" : "";
+}
+
+function reportGapStyle(row, side) {
+  if (side === "old" && row.kind === "insert") {
+    return ' style="background:repeating-linear-gradient(135deg,#fff 0,#fff 6px,#dcfce7 6px,#dcfce7 12px)"';
+  }
+  if (side === "new" && row.kind === "delete") {
+    return ' style="background:repeating-linear-gradient(135deg,#fff 0,#fff 6px,#fee2e2 6px,#fee2e2 12px)"';
+  }
+  return "";
+}
+
+function reportLineHtml(row, side) {
+  const segments = side === "old" ? row.old_segments : row.new_segments;
+  if (segments) return segments.map((segment) => segment.changed ? `<mark>${escapeHtml(segment.text)}</mark>` : escapeHtml(segment.text)).join("");
+  const text = side === "old" ? row.old ?? "" : row.new ?? "";
+  return row.kind === "insert" || row.kind === "delete" ? `<mark>${escapeHtml(text)}</mark>` : escapeHtml(text);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+}
+
+function standaloneReportCss() {
+  return `:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#172033;background:#f1f5f9}*{box-sizing:border-box}body{margin:0}header,footer{padding:24px 5vw;background:#172033;color:#fff}header h1{margin:0 0 16px}dl{margin:0;display:flex;gap:28px;flex-wrap:wrap}dl div{display:flex;gap:8px}dt{color:#a8b3c7}dd{margin:0}main{width:min(1500px,94vw);margin:24px auto}section{margin:0 0 28px;background:#fff;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden;page-break-inside:avoid}h2{margin:0;padding:14px 18px;background:#e2e8f0;font-size:18px}.badge{margin-left:8px;padding:3px 8px;border-radius:99px;background:#64748b;color:#fff;font-size:12px}.badge.added,.badge.untracked{background:#16803b}.badge.deleted{background:#b42318}aside{margin:14px 18px;padding:12px 14px;border-left:5px solid #eab308;background:#fefce8}aside p,aside ol{margin:6px 0 0}.diff-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);overflow:auto}.diff-grid h3{position:sticky;top:0;margin:0;padding:10px 12px;background:#172033;color:#fff;font-size:13px}.code-cell{min-width:460px;display:grid;grid-template-columns:52px 1fr;border-bottom:1px solid #e2e8f0;background:#fff}.code-cell>span{padding:2px 8px;background:#f8fafc;border-right:1px solid #e2e8f0;text-align:right;color:#64748b;user-select:none}.code-cell code{padding:2px 8px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.code-cell.removed{background:#ffebe9}.code-cell.added{background:#dafbe1}.code-cell mark{padding:0;background:#f7a8a8}.code-cell.added mark{background:#83d997}.image-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;padding:16px;background:#e2e8f0}.image-grid figure{margin:0;background:#fff;border:1px solid #94a3b8}.image-grid figcaption{padding:8px 10px;background:#172033;color:#fff;font-weight:700}.image-grid img{display:block;width:100%;height:auto}.empty-report{padding:18px}footer{text-align:center;color:#cbd5e1;font-size:12px}@media print{header{background:#fff;color:#000;border-bottom:2px solid #000}main{width:100%;margin:12px 0}.diff-grid{font-size:9px}.image-grid{grid-template-columns:1fr 1fr}footer{display:none}}`;
+}
+
+async function renderImageWithNotesDataUri(imageSrc, notes, stageSize = null) {
+  const image = await loadImage(imageSrc);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0);
+  drawNotes(ctx, notes, canvas.width, canvas.height, stageSize);
+  return canvas.toDataURL("image/png");
 }
 
 async function storeMemoPayload(id, payload) {

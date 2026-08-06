@@ -13,8 +13,9 @@ from PIL import Image
 
 from backend.app.attachments import ATTACHMENTS_DIR, cleanup_expired_attachments
 from backend.app.diffing import build_visual_diff
-from backend.app.image_io import _prepare_svg_for_rasterization, rasterize_upload_page
-from backend.app.main import _git, _run_git_process, app
+from backend.app.image_io import _decompress_lz_string_base64, _prepare_svg_for_rasterization, rasterize_upload_page
+from backend.app.main import _build_text_diff_rows, _git, _run_git_process, app
+from backend.app.result_cache import store_diff_images
 
 
 class TestBackendPipeline(unittest.TestCase):
@@ -127,15 +128,17 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertEqual(fmt, "svg")
         self.assertEqual(page.image.size, (120, 80))
 
-    def test_drawio_svg_keeps_svg_text_fallback(self):
+    def test_drawio_svg_converts_html_text_and_preserves_line_breaks(self):
         svg = b'''<?xml version="1.0" encoding="UTF-8"?>
         <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80">
           <g transform="translate(20,20)">
             <switch>
               <foreignObject width="80" height="20">
-                <div xmlns="http://www.w3.org/1999/xhtml">HTML label</div>
+                <div xmlns="http://www.w3.org/1999/xhtml" style="padding-top: 20px; margin-left: 0px; width: 80px; justify-content: center;">
+                  <div style="font-size: 12px; color: light-dark(#000000, #ffffff)">HTML label<div>second line</div></div>
+                </div>
               </foreignObject>
-              <text x="0" y="16">SVG label</text>
+              <text x="0" y="16">SVG label...</text>
             </switch>
           </g>
         </svg>'''
@@ -143,7 +146,13 @@ class TestBackendPipeline(unittest.TestCase):
         prepared = _prepare_svg_for_rasterization(svg)
 
         self.assertNotIn(b"foreignObject", prepared)
-        self.assertIn(b"SVG label", prepared)
+        self.assertNotIn(b"SVG label...", prepared)
+        self.assertIn(b"HTML label", prepared)
+        self.assertIn(b"second line", prepared)
+        self.assertNotIn(b"light-dark(", prepared)
+
+    def test_lz_string_base64_decompression_matches_obsidian_excalidraw_format(self):
+        self.assertEqual(_decompress_lz_string_base64("BIUwNmD2AEDukCcwBMCEQ==="), "Hello world!")
 
     def test_convert_graph_suggests_plot_frame_region(self):
         with open(os.path.join(self.samples_dir, "bathtub_curve_a.png"), "rb") as image:
@@ -282,6 +291,30 @@ class TestBackendPipeline(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(any("rotation" in warning for warning in response.json()["warnings"]))
+
+    def test_excalidraw_honors_canvas_background_color(self):
+        payload = {
+            "type": "excalidraw",
+            "elements": [
+                {
+                    "id": "rect",
+                    "type": "rectangle",
+                    "x": 10,
+                    "y": 10,
+                    "width": 40,
+                    "height": 30,
+                    "strokeColor": "#000000",
+                    "backgroundColor": "transparent",
+                    "strokeWidth": 1,
+                    "isDeleted": False,
+                }
+            ],
+            "appState": {"viewBackgroundColor": "#123456"},
+        }
+
+        _, page = rasterize_upload_page("background.excalidraw", json.dumps(payload).encode("utf-8"))
+
+        self.assertEqual(page.image.getpixel((0, 0)), (18, 52, 86))
 
     def test_diff_accepts_anchor_region(self):
         anchor_region = {"x": 0, "y": 0, "width": 800, "height": 600, "label": "全体枠候補"}
@@ -451,6 +484,193 @@ class TestBackendPipeline(unittest.TestCase):
             os.path.normcase(response.json()["repo_root"]),
             os.path.normcase(os.path.abspath(repo_root)),
         )
+
+    def test_git_files_lists_text_changes_and_builds_side_by_side_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            markdown_path = os.path.join(tmp, "guide.md")
+            with open(markdown_path, "w", encoding="utf-8") as stream:
+                stream.write("# Guide\n\nOld sentence\n")
+            self._git(tmp, "init", "--quiet")
+            self._git(tmp, "config", "user.email", "review@example.com")
+            self._git(tmp, "config", "user.name", "Review")
+            self._git(tmp, "add", "guide.md")
+            self._git(tmp, "commit", "--quiet", "-m", "initial text")
+            with open(markdown_path, "w", encoding="utf-8") as stream:
+                stream.write("# Guide\n\nNew sentence\nAdded line\n")
+
+            files_response = self.client.post(
+                "/api/git/files",
+                json={"folder": tmp, "text_extensions": [".md"]},
+            )
+            self.assertEqual(files_response.status_code, 200, files_response.text)
+            item = files_response.json()["files"][0]
+            self.assertEqual(item["kind"], "text")
+            self.assertEqual(item["change_type"], "modified")
+
+            item_response = self.client.post(
+                "/api/git/item",
+                json={"folder": tmp, "text_extensions": [".md"], **item},
+            )
+            self.assertEqual(item_response.status_code, 200, item_response.text)
+            body = item_response.json()
+            self.assertEqual(body["text_head"], "# Guide\n\nOld sentence\n")
+            self.assertEqual(body["text_current"], "# Guide\n\nNew sentence\nAdded line\n")
+            self.assertTrue(any(row["kind"] == "replace" for row in body["rows"]))
+            self.assertTrue(any(row["kind"] == "insert" for row in body["rows"]))
+
+            compact_response = self.client.post(
+                "/api/git/item",
+                json={"folder": tmp, "text_extensions": [".md"], "include_text": False, **item},
+            )
+            self.assertEqual(compact_response.status_code, 200, compact_response.text)
+            self.assertNotIn("text_head", compact_response.json())
+            self.assertNotIn("text_current", compact_response.json())
+
+    def test_git_treats_excalidraw_markdown_as_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            drawing_path = os.path.join(tmp, "diagram.excalidraw.md")
+            base_payload = {
+                "type": "excalidraw",
+                "elements": [{
+                    "id": "box",
+                    "type": "rectangle",
+                    "x": 10,
+                    "y": 10,
+                    "width": 80,
+                    "height": 50,
+                    "strokeColor": "#000000",
+                    "backgroundColor": "transparent",
+                    "strokeWidth": 2,
+                    "isDeleted": False,
+                }],
+                "appState": {},
+            }
+
+            def write_drawing(payload):
+                with open(drawing_path, "w", encoding="utf-8") as stream:
+                    stream.write("---\nexcalidraw-plugin: parsed\n---\n```json\n")
+                    stream.write(json.dumps(payload))
+                    stream.write("\n```\n")
+
+            write_drawing(base_payload)
+            self._git(tmp, "init", "--quiet")
+            self._git(tmp, "config", "user.email", "review@example.com")
+            self._git(tmp, "config", "user.name", "Review")
+            self._git(tmp, "add", "diagram.excalidraw.md")
+            self._git(tmp, "commit", "--quiet", "-m", "initial drawing")
+            changed_payload = json.loads(json.dumps(base_payload))
+            changed_payload["elements"][0]["width"] = 120
+            write_drawing(changed_payload)
+
+            files_response = self.client.post(
+                "/api/git/files",
+                json={"folder": tmp, "text_extensions": [".md"]},
+            )
+            self.assertEqual(files_response.status_code, 200, files_response.text)
+            item = files_response.json()["files"][0]
+            self.assertEqual(item["kind"], "image")
+
+            diff_response = self.client.post("/api/git/diff", json={"folder": tmp, **item})
+            self.assertEqual(diff_response.status_code, 200, diff_response.text)
+            self.assertGreater(diff_response.json()["diff_pixels"], 0)
+
+    def test_git_item_rejects_large_text_before_diffing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text_path = os.path.join(tmp, "large.md")
+            with open(text_path, "w", encoding="utf-8") as stream:
+                stream.write("too large")
+            self._git(tmp, "init", "--quiet")
+
+            with patch("backend.app.main.MAX_TEXT_BYTES", 4):
+                response = self.client.post(
+                    "/api/git/item",
+                    json={
+                        "folder": tmp,
+                        "path": "large.md",
+                        "head_path": "large.md",
+                        "has_head": False,
+                        "has_current": True,
+                        "text_extensions": [".md"],
+                    },
+                )
+
+            self.assertEqual(response.status_code, 413, response.text)
+
+    def test_long_changed_line_skips_expensive_inline_matching(self):
+        old_line = "a" * 12_000
+        new_line = "b" * 12_000
+
+        rows = _build_text_diff_rows(old_line, new_line)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["old_segments"], [{"text": old_line, "changed": True}])
+        self.assertEqual(rows[0]["new_segments"], [{"text": new_line, "changed": True}])
+
+    def test_text_diff_reports_terminal_newline_change(self):
+        rows = _build_text_diff_rows("same line\n", "same line")
+
+        self.assertEqual(rows[-1]["kind"], "replace")
+        self.assertEqual(rows[-1]["old"], "ファイル末尾: 改行あり")
+        self.assertEqual(rows[-1]["new"], "ファイル末尾: 改行なし")
+
+    def test_git_item_rejects_control_character_binary_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary_path = os.path.join(tmp, "binary.txt")
+            with open(binary_path, "wb") as stream:
+                stream.write(b"abc\x01\x02\x03")
+            self._git(tmp, "init", "--quiet")
+
+            response = self.client.post(
+                "/api/git/item",
+                json={
+                    "folder": tmp,
+                    "path": "binary.txt",
+                    "head_path": "binary.txt",
+                    "has_head": False,
+                    "has_current": True,
+                    "text_extensions": [".txt"],
+                },
+            )
+
+            self.assertEqual(response.status_code, 422, response.text)
+
+    def test_oversized_diff_pair_does_not_return_unusable_cache_id(self):
+        image = np.zeros((2, 2, 3), dtype=np.uint8)
+        with patch("backend.app.result_cache.MAX_CACHE_BYTES", 1):
+            result_id = store_diff_images(image, image)
+
+        self.assertIsNone(result_id)
+
+    def test_git_files_includes_added_deleted_and_untracked_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            deleted_path = os.path.join(tmp, "deleted.md")
+            added_path = os.path.join(tmp, "added.txt")
+            untracked_path = os.path.join(tmp, "notes.md")
+            with open(deleted_path, "w", encoding="utf-8") as stream:
+                stream.write("deleted\n")
+            self._git(tmp, "init", "--quiet")
+            self._git(tmp, "config", "user.email", "review@example.com")
+            self._git(tmp, "config", "user.name", "Review")
+            self._git(tmp, "add", "deleted.md")
+            self._git(tmp, "commit", "--quiet", "-m", "initial")
+            os.remove(deleted_path)
+            with open(added_path, "w", encoding="utf-8") as stream:
+                stream.write("added\n")
+            self._git(tmp, "add", "added.txt")
+            with open(untracked_path, "w", encoding="utf-8") as stream:
+                stream.write("untracked\n")
+
+            response = self.client.post(
+                "/api/git/files",
+                json={"folder": tmp, "text_extensions": ["md", ".txt"]},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            by_path = {item["path"]: item for item in response.json()["files"]}
+            self.assertEqual(by_path["deleted.md"]["change_type"], "deleted")
+            self.assertFalse(by_path["deleted.md"]["has_current"])
+            self.assertEqual(by_path["added.txt"]["change_type"], "added")
+            self.assertFalse(by_path["added.txt"]["has_head"])
+            self.assertEqual(by_path["notes.md"]["change_type"], "untracked")
 
     def test_git_text_output_uses_utf8_instead_of_windows_locale(self):
         completed = subprocess.CompletedProcess(

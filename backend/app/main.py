@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -62,6 +63,12 @@ IMAGE_EXTENSIONS = {
     ".pdf",
     ".excalidraw",
 }
+EXCALIDRAW_MARKDOWN_SUFFIXES = (".excalidraw.md", "_excalidraw.md")
+DEFAULT_TEXT_EXTENSIONS = {".md", ".txt", ".csv", ".json", ".yaml", ".yml"}
+MAX_TEXT_BYTES = 5 * 1024 * 1024
+MAX_TEXT_DIFF_LINES = 30_000
+MAX_INLINE_DIFF_CHARS = 20_000
+EXTENSION_RE = re.compile(r"^\.[a-z0-9][a-z0-9._+-]{0,15}$")
 READ_CHUNK_SIZE = 1024 * 1024
 DUBIOUS_OWNERSHIP_RE = re.compile(r"detected dubious ownership in repository at '([^']+)'")
 
@@ -226,7 +233,7 @@ async def get_diff_result(result_id: str, diff_threshold: float = 0.1) -> DiffRe
 
 
 @app.post("/api/git/images")
-async def git_images(payload: dict) -> JSONResponse:
+def git_images(payload: dict) -> JSONResponse:
     folder = _payload_folder(payload)
     repo = _git_repo_root(folder)
     files = _changed_image_files(repo, folder)
@@ -239,8 +246,63 @@ async def git_images(payload: dict) -> JSONResponse:
     )
 
 
+@app.post("/api/git/files")
+def git_files(payload: dict) -> JSONResponse:
+    folder = _payload_folder(payload)
+    repo = _git_repo_root(folder)
+    text_extensions = _text_extensions_from_payload(payload)
+    files = _changed_files(repo, folder, text_extensions)
+    return JSONResponse(
+        {
+            "folder": str(folder),
+            "repo_root": str(repo),
+            "text_extensions": sorted(text_extensions),
+            "files": files,
+        }
+    )
+
+
+@app.post("/api/git/item")
+def git_item(payload: dict) -> JSONResponse:
+    folder = _payload_folder(payload)
+    repo = _git_repo_root(folder)
+    path = str(payload.get("path") or "")
+    if not path:
+        raise HTTPException(status_code=422, detail="path is required")
+    rel_path = _safe_git_path(repo, path, restrict_to_images=False)
+    head_path = str(payload.get("head_path") or path)
+    head_rel_path = _safe_git_path(repo, head_path, restrict_to_images=False)
+    text_extensions = _text_extensions_from_payload(payload)
+    kind = _git_file_kind(rel_path, text_extensions)
+    if kind is None:
+        raise HTTPException(status_code=422, detail="path extension is not enabled")
+
+    has_head = bool(payload.get("has_head", True))
+    has_current = bool(payload.get("has_current", True))
+    max_bytes = MAX_UPLOAD_BYTES if kind == "image" else MAX_TEXT_BYTES
+    previous = _git_show(repo, head_rel_path, max_bytes=max_bytes) if has_head else None
+    current_path = repo / rel_path
+    current = None
+    if has_current:
+        if not current_path.exists() or not current_path.is_file():
+            raise HTTPException(status_code=404, detail=f"Current file not found: {rel_path}")
+        current = _read_file_limited(current_path, max_bytes, rel_path)
+
+    response: dict = {"path": rel_path, "head_path": head_rel_path, "kind": kind}
+    if kind == "image":
+        response["image_head"] = _git_preview_payload(head_rel_path, previous) if previous is not None else None
+        response["image_current"] = _git_preview_payload(rel_path, current) if current is not None else None
+    else:
+        old_text, old_encoding = _decode_git_text(previous) if previous is not None else ("", None)
+        new_text, new_encoding = _decode_git_text(current) if current is not None else ("", None)
+        response.update({"encoding_head": old_encoding, "encoding_current": new_encoding, "rows": _build_text_diff_rows(old_text, new_text)})
+        if payload.get("include_text", True):
+            response.update({"text_head": old_text, "text_current": new_text})
+    return JSONResponse(response)
+
+
 @app.post("/api/git/diff", response_model=DiffResponse)
-async def git_diff(payload: dict) -> DiffResponse:
+def git_diff(payload: dict) -> DiffResponse:
     folder = _payload_folder(payload)
     repo = _git_repo_root(folder)
     path = str(payload.get("path") or "")
@@ -252,8 +314,8 @@ async def git_diff(payload: dict) -> DiffResponse:
     current_path = repo / rel_path
     if not current_path.exists() or not current_path.is_file():
         raise HTTPException(status_code=404, detail=f"Current file not found: {rel_path}")
-    previous = _git_show(repo, head_rel_path)
-    current = current_path.read_bytes()
+    previous = _git_show(repo, head_rel_path, max_bytes=MAX_UPLOAD_BYTES)
+    current = _read_file_limited(current_path, MAX_UPLOAD_BYTES, rel_path)
     return _build_diff_response(
         filename_a=f"HEAD:{head_rel_path}",
         content_a=previous,
@@ -424,7 +486,9 @@ def _build_cached_diff_response(result_id: str, cached, diff_threshold: float) -
     )
 
 
-def _schedule_open_result(background_tasks: BackgroundTasks, request: Request, result_id: str) -> None:
+def _schedule_open_result(background_tasks: BackgroundTasks, request: Request, result_id: str | None) -> None:
+    if not result_id:
+        return
     if os.environ.get("VISUAL_DIFF_OPEN_BROWSER", "1").lower() in {"0", "false", "no"}:
         return
     if request.url.hostname not in {"127.0.0.1", "localhost"}:
@@ -490,6 +554,22 @@ def _git_repo_root(folder: Path) -> Path:
 
 
 def _changed_image_files(repo: Path, folder: Path) -> list[dict]:
+    images = []
+    for item in _changed_files(repo, folder, set()):
+        if item["kind"] != "image":
+            continue
+        comparable = item["diffable"]
+        images.append(
+            {
+                **item,
+                "comparable": comparable,
+                "reason": None if comparable else "HEAD側または作業フォルダ側の画像がないため比較できません",
+            }
+        )
+    return images
+
+
+def _changed_files(repo: Path, folder: Path, text_extensions: set[str]) -> list[dict]:
     output = _git(["status", "--porcelain=v1", "-z", "--", str(folder)], repo)
     entries = [item for item in output.split("\0") if item]
     files = []
@@ -504,34 +584,178 @@ def _changed_image_files(repo: Path, folder: Path) -> list[dict]:
             if i < len(entries):
                 head_path = entries[i]
         i += 1
-        if Path(path).suffix.lower() not in IMAGE_EXTENSIONS:
+        kind = _git_file_kind(path, text_extensions)
+        if kind is None:
             continue
-        comparable = "?" not in status and "A" not in status and "D" not in status
+        has_head = "?" not in status and "A" not in status
+        has_current = "D" not in status
+        if "?" in status:
+            change_type = "untracked"
+        elif "R" in status:
+            change_type = "renamed"
+        elif "C" in status:
+            change_type = "copied"
+        elif not has_head:
+            change_type = "added"
+        elif not has_current:
+            change_type = "deleted"
+        else:
+            change_type = "modified"
         files.append(
             {
                 "path": path,
                 "head_path": head_path,
                 "status": status.strip() or "M",
-                "comparable": comparable,
-                "reason": None if comparable else "HEAD側の画像がないため比較できません",
+                "kind": kind,
+                "change_type": change_type,
+                "has_head": has_head,
+                "has_current": has_current,
+                "diffable": has_head and has_current,
+                "comparable": True,
+                "reason": None,
             }
         )
     return files
 
 
-def _safe_git_path(repo: Path, path: str) -> str:
+def _safe_git_path(repo: Path, path: str, *, restrict_to_images: bool = True) -> str:
     rel = Path(path)
     if rel.is_absolute() or ".." in rel.parts:
         raise HTTPException(status_code=422, detail="path must be a repository-relative path")
     resolved = (repo / rel).resolve()
     if repo != resolved and repo not in resolved.parents:
         raise HTTPException(status_code=422, detail="path is outside repository")
-    if rel.suffix.lower() not in IMAGE_EXTENSIONS:
+    if restrict_to_images and not _is_git_image_path(rel.as_posix()):
         raise HTTPException(status_code=422, detail="path is not a supported image file")
     return rel.as_posix()
 
 
-def _git_show(repo: Path, rel_path: str) -> bytes:
+def _is_git_image_path(path: str) -> bool:
+    lower_path = path.lower()
+    return lower_path.endswith(EXCALIDRAW_MARKDOWN_SUFFIXES) or Path(lower_path).suffix in IMAGE_EXTENSIONS
+
+
+def _git_file_kind(path: str, text_extensions: set[str]) -> str | None:
+    if _is_git_image_path(path):
+        return "image"
+    return "text" if Path(path).suffix.lower() in text_extensions else None
+
+
+def _text_extensions_from_payload(payload: dict) -> set[str]:
+    raw = payload.get("text_extensions")
+    if raw is None:
+        return set(DEFAULT_TEXT_EXTENSIONS)
+    if not isinstance(raw, list) or len(raw) > 50:
+        raise HTTPException(status_code=422, detail="text_extensions must be a list of at most 50 extensions")
+    result = set()
+    for item in raw:
+        extension = str(item).strip().lower()
+        if extension and not extension.startswith("."):
+            extension = f".{extension}"
+        if not EXTENSION_RE.fullmatch(extension):
+            raise HTTPException(status_code=422, detail=f"invalid text extension: {item}")
+        if extension not in IMAGE_EXTENSIONS:
+            result.add(extension)
+    return result
+
+
+def _decode_git_text(content: bytes) -> tuple[str, str]:
+    if len(content) > MAX_TEXT_BYTES:
+        raise HTTPException(status_code=413, detail=f"Text file exceeds {MAX_TEXT_BYTES // (1024 * 1024)} MB")
+    if b"\x00" in content:
+        raise HTTPException(status_code=422, detail="Binary content cannot be shown as text")
+    control_bytes = sum(byte < 32 and byte not in {9, 10, 12, 13} for byte in content)
+    if content and control_bytes / len(content) > 0.01:
+        raise HTTPException(status_code=422, detail="Binary content cannot be shown as text")
+    for encoding in ("utf-8-sig", "cp932"):
+        try:
+            return content.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="replace"), "utf-8 (replacement characters)"
+
+
+def _build_text_diff_rows(old_text: str, new_text: str) -> list[dict]:
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+    if len(old_lines) > MAX_TEXT_DIFF_LINES or len(new_lines) > MAX_TEXT_DIFF_LINES:
+        raise HTTPException(status_code=413, detail=f"Text diff exceeds {MAX_TEXT_DIFF_LINES:,} lines per side")
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=max(len(old_lines), len(new_lines)) > 2_000)
+    rows: list[dict] = []
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        old_group = old_lines[old_start:old_end]
+        new_group = new_lines[new_start:new_end]
+        count = max(len(old_group), len(new_group))
+        for offset in range(count):
+            old_line = old_group[offset] if offset < len(old_group) else None
+            new_line = new_group[offset] if offset < len(new_group) else None
+            row_tag = tag
+            if tag == "replace" and old_line is None:
+                row_tag = "insert"
+            elif tag == "replace" and new_line is None:
+                row_tag = "delete"
+            rows.append(
+                {
+                    "kind": row_tag,
+                    "old_number": old_start + offset + 1 if old_line is not None else None,
+                    "new_number": new_start + offset + 1 if new_line is not None else None,
+                    "old": old_line,
+                    "new": new_line,
+                    "old_segments": _inline_diff_segments(old_line or "", new_line or "", "old") if row_tag == "replace" else None,
+                    "new_segments": _inline_diff_segments(old_line or "", new_line or "", "new") if row_tag == "replace" else None,
+                }
+            )
+    old_terminal_newline = old_text.endswith(("\n", "\r"))
+    new_terminal_newline = new_text.endswith(("\n", "\r"))
+    if old_terminal_newline != new_terminal_newline:
+        old_marker = "ファイル末尾: 改行あり" if old_terminal_newline else "ファイル末尾: 改行なし"
+        new_marker = "ファイル末尾: 改行あり" if new_terminal_newline else "ファイル末尾: 改行なし"
+        rows.append(
+            {
+                "kind": "replace",
+                "old_number": None,
+                "new_number": None,
+                "old": old_marker,
+                "new": new_marker,
+                "old_segments": [{"text": old_marker, "changed": True}],
+                "new_segments": [{"text": new_marker, "changed": True}],
+            }
+        )
+    return rows
+
+
+def _inline_diff_segments(old_line: str, new_line: str, side: str) -> list[dict]:
+    if len(old_line) + len(new_line) > MAX_INLINE_DIFF_CHARS:
+        text = old_line if side == "old" else new_line
+        return [{"text": text, "changed": True}] if text else []
+    matcher = difflib.SequenceMatcher(None, old_line, new_line, autojunk=False)
+    segments = []
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        text = old_line[old_start:old_end] if side == "old" else new_line[new_start:new_end]
+        if text:
+            segments.append({"text": text, "changed": tag != "equal"})
+    return segments
+
+
+def _git_preview_payload(filename: str, content: bytes) -> dict:
+    _, page = _convert_page_or_400(filename, content, 0)
+    return {"mime_type": "image/png", "data": encode_png(page.image)}
+
+
+def _read_file_limited(path: Path, max_bytes: int, label: str) -> bytes:
+    if path.stat().st_size > max_bytes:
+        raise HTTPException(status_code=413, detail=f"{label} exceeds {max_bytes // (1024 * 1024)} MB")
+    content = path.read_bytes()
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"{label} exceeds {max_bytes // (1024 * 1024)} MB")
+    return content
+
+
+def _git_show(repo: Path, rel_path: str, *, max_bytes: int | None = None) -> bytes:
+    if max_bytes is not None:
+        size = _git_object_size(repo, rel_path)
+        if size > max_bytes:
+            raise HTTPException(status_code=413, detail=f"HEAD:{rel_path} exceeds {max_bytes // (1024 * 1024)} MB")
     try:
         completed = _run_git_process(
             repo,
@@ -547,6 +771,27 @@ def _git_show(repo: Path, rel_path: str) -> bytes:
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="git show timed out") from exc
     return completed.stdout or b""
+
+
+def _git_object_size(repo: Path, rel_path: str) -> int:
+    try:
+        completed = _run_git_process(
+            repo,
+            ["cat-file", "-s", f"HEAD:{rel_path}"],
+            check=True,
+            capture_output=True,
+            timeout=20,
+            text=True,
+            safe_directory=repo,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=404, detail=f"HEAD側のファイルを取得できません: {rel_path}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="git object size check timed out") from exc
+    try:
+        return int((completed.stdout or "0").strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Could not determine HEAD file size: {rel_path}") from exc
 
 
 def _git(args: list[str], repo: Path) -> str:

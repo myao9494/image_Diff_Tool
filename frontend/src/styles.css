@@ -17,7 +17,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -28,13 +29,20 @@ main {
 }
 
 .app-header {
-  min-height: 76px;
-  padding: 16px 24px;
+  min-height: 52px;
+  padding: 6px 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #334155;
   background: #1e293b;
+}
+
+.header-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 18px;
 }
 
 .header-menu {
@@ -91,9 +99,53 @@ main {
   background: #1f2937;
 }
 
+.extension-settings {
+  padding: 10px;
+  border-top: 1px solid #374151;
+  border-bottom: 1px solid #374151;
+}
+
+.extension-settings label,
+.extension-settings > div {
+  display: flex;
+  gap: 8px;
+}
+
+.extension-settings label {
+  flex-direction: column;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.extension-settings textarea {
+  width: 100%;
+  min-height: 70px;
+  padding: 8px;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  background: #0f172a;
+  color: #e2e8f0;
+  resize: vertical;
+}
+
+.extension-settings small {
+  display: block;
+  margin: 7px 0;
+  color: #94a3b8;
+}
+
+.extension-settings > div button {
+  min-height: 32px;
+  display: inline-flex;
+  grid-template-columns: none;
+  justify-content: center;
+  border: 1px solid #475569;
+  background: #1e293b;
+}
+
 h1 {
   margin: 0;
-  font-size: 24px;
+  font-size: 22px;
   letter-spacing: 0;
 }
 
@@ -155,20 +207,26 @@ p {
 }
 
 .toolbar {
-  padding: 14px 24px;
+  padding: 8px 24px;
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  align-items: flex-end;
+  gap: 8px 10px;
+  align-items: center;
   border-bottom: 1px solid #334155;
   background: #0f172a;
 }
 
 .mode-tabs {
-  padding: 10px 24px 0;
+  padding: 4px 24px 0;
   display: flex;
   gap: 8px;
   background: #0f172a;
+}
+
+.header-main .mode-tabs {
+  padding: 0;
+  gap: 6px;
+  background: transparent;
 }
 
 .mode-tabs button,
@@ -186,8 +244,14 @@ p {
 }
 
 .mode-tabs button {
-  padding: 0 14px;
+  min-height: 32px;
+  padding: 0 12px;
   font-weight: 700;
+}
+
+.header-main .mode-tabs button {
+  min-height: 34px;
+  padding: 0 11px;
 }
 
 .mode-tabs button.active {
@@ -197,10 +261,11 @@ p {
 }
 
 .git-folder {
-  min-width: min(480px, 100%);
+  min-width: min(300px, 100%);
+  flex: 1 1 360px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
 }
 
 .git-folder span,
@@ -236,13 +301,19 @@ p {
 }
 
 .git-nav select {
-  width: min(420px, 45vw);
+  width: min(340px, 32vw);
 }
 
 .git-meta {
-  min-width: 220px;
+  min-width: 160px;
+  flex: 1 1 180px;
   display: flex;
   flex-direction: column;
+}
+
+.toolbar > .primary {
+  padding-left: 12px;
+  padding-right: 12px;
 }
 
 .git-meta strong {
@@ -394,6 +465,225 @@ select {
   background: #422006;
   border: 1px solid #92400e;
   color: #fde68a;
+}
+
+.notice.success {
+  background: #052e16;
+  border: 1px solid #15803d;
+  color: #bbf7d0;
+}
+
+.text-diff-section {
+  margin: 0 24px 14px;
+  min-height: 0;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #111827;
+}
+
+.text-diff-mode {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.text-diff-mode .text-diff-section {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.text-diff-heading {
+  padding: 7px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  border-bottom: 1px solid #334155;
+  background: #1e293b;
+}
+
+.text-diff-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.text-diff-heading > div strong {
+  overflow-wrap: anywhere;
+}
+
+.text-diff-heading label {
+  flex: 1 1 600px;
+  width: auto;
+  max-width: 760px;
+  margin-left: auto;
+  display: flex;
+}
+
+.text-diff-heading textarea {
+  width: 100%;
+  height: 34px;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  background: #0f172a;
+  color: #f8fafc;
+  resize: none;
+}
+
+.change-badge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #475569;
+  color: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.change-badge.added,
+.change-badge.untracked {
+  background: #15803d;
+}
+
+.change-badge.deleted {
+  background: #b91c1c;
+}
+
+.text-diff-columns {
+  display: grid;
+  grid-template-columns: minmax(460px, 1fr) minmax(460px, 1fr);
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.text-column-title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 10px;
+  border-bottom: 1px solid #475569;
+  background: #0f172a;
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.diff-code-cell {
+  min-width: 460px;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  border-bottom: 1px solid #283548;
+  background: #111827;
+}
+
+.diff-code-cell .line-number {
+  padding: 2px 8px;
+  border-right: 1px solid #334155;
+  background: #0f172a;
+  color: #64748b;
+  text-align: right;
+  user-select: none;
+}
+
+.diff-code-cell code {
+  padding: 1px 7px;
+  color: #dbeafe;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.diff-code-cell.removed {
+  background: #6b2632 !important;
+  box-shadow: inset 5px 0 #ff7b72, inset 0 0 0 1px #ff7b72;
+}
+
+.diff-code-cell.added {
+  background: #2f7d46 !important;
+  box-shadow: inset 5px 0 #7ee787, inset 0 0 0 1px #7ee787;
+}
+
+.diff-code-cell.removed-gap {
+  background: repeating-linear-gradient(135deg, #111827 0, #111827 6px, #6b2632 6px, #6b2632 12px) !important;
+  box-shadow: inset 5px 0 #ff7b72, inset 0 0 0 1px #ff7b72;
+}
+
+.diff-code-cell.added-gap {
+  background: repeating-linear-gradient(135deg, #111827 0, #111827 6px, #2f7d46 6px, #2f7d46 12px) !important;
+  box-shadow: inset 5px 0 #7ee787, inset 0 0 0 1px #7ee787;
+}
+
+.diff-code-cell.added code,
+.diff-code-cell.added-gap code {
+  color: #ffffff;
+}
+
+.diff-code-cell.added mark.changed {
+  background: #7ee787;
+  color: #06210c;
+}
+
+.diff-code-cell.removed mark.changed {
+  background: #ffa198;
+  color: #210407;
+}
+
+.diff-code-cell.added .line-number {
+  background: #1f6f36;
+  color: #ffffff;
+}
+
+.diff-code-cell.removed .line-number {
+  background: #8f303d;
+  color: #ffffff;
+}
+
+.git-export-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  color: #dbeafe;
+  white-space: nowrap;
+}
+
+.git-export-toggle.disabled {
+  opacity: 0.55;
+}
+
+.git-export-toggle input {
+  accent-color: #3b82f6;
+}
+
+.diff-code-cell mark {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.diff-code-cell.removed mark.changed {
+  background: #ffa198;
+  color: #210407;
+}
+
+.diff-code-cell.added mark.changed {
+  background: #7ee787;
+  color: #06210c;
+}
+
+.text-diff-empty {
+  grid-column: 1 / -1;
+  padding: 48px;
+  color: #64748b;
+  text-align: center;
 }
 
 .summary {
@@ -635,6 +925,22 @@ select {
   accent-color: #f97316;
 }
 
+.memo-fit-button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #64748b;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #e2e8f0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.memo-fit-button:hover {
+  border-color: #f97316;
+  color: #fff7ed;
+}
+
 .copy-notice {
   color: #bbf7d0;
   font-size: 13px;
@@ -644,20 +950,24 @@ select {
   height: calc(100vh - 130px);
   overflow: auto;
   padding: 24px;
-  display: grid;
-  place-items: start center;
+  display: block;
 }
 
 .memo-stage {
   position: relative;
   width: min(100%, 1280px);
+  margin: 0 auto;
   min-height: 420px;
   background: #0a0a0a;
   border: 1px solid #374151;
   border-radius: 6px;
   overflow: hidden;
-  cursor: ew-resize;
+  cursor: grab;
   user-select: none;
+}
+
+.memo-stage.panning {
+  cursor: grabbing;
 }
 
 .memo-image,
@@ -989,6 +1299,18 @@ pre {
     padding-right: 12px;
   }
 
+  .header-main {
+    gap: 10px;
+  }
+
+  .header-main .mode-tabs {
+    gap: 4px;
+  }
+
+  .header-main .mode-tabs button {
+    padding: 0 8px;
+  }
+
   .api-guide-header {
     align-items: flex-start;
     flex-direction: column;
@@ -1024,5 +1346,20 @@ pre {
 
   .summary {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .text-diff-section {
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+
+  .text-diff-heading {
+    flex-direction: column;
+  }
+
+  .text-diff-heading label {
+    width: 100%;
+    max-width: none;
+    flex-basis: auto;
   }
 }

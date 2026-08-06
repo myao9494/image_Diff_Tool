@@ -38,11 +38,11 @@ def store_diff_images(
     page_a: int = 0,
     page_b: int = 0,
     category: str = "汎用",
-) -> str:
+) -> str | None:
     result_id = uuid4().hex
     size_bytes = int(image_a.nbytes + image_b_aligned.nbytes)
     if size_bytes > MAX_CACHE_BYTES:
-        return result_id
+        return None
 
     with _lock:
         global _cache_bytes

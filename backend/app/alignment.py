@@ -230,8 +230,10 @@ def _template_anchor_fallback(
 def _detector_candidates(features: int):
     if hasattr(cv2, "SIFT_create"):
         yield "SIFT", cv2.SIFT_create(nfeatures=features, contrastThreshold=0.025, edgeThreshold=12), cv2.NORM_L2, 1.0
-    yield "AKAZE", cv2.AKAZE_create(threshold=0.0006), cv2.NORM_HAMMING, 1.05
-    yield "ORB", cv2.ORB_create(nfeatures=features, fastThreshold=5, scoreType=cv2.ORB_HARRIS_SCORE), cv2.NORM_HAMMING, 1.08
+    if hasattr(cv2, "AKAZE_create"):
+        yield "AKAZE", cv2.AKAZE_create(threshold=0.0006), cv2.NORM_HAMMING, 1.05
+    if hasattr(cv2, "ORB_create"):
+        yield "ORB", cv2.ORB_create(nfeatures=features, fastThreshold=5, scoreType=cv2.ORB_HARRIS_SCORE), cv2.NORM_HAMMING, 1.08
 
 
 def _has_confident_detector_result(attempts: list[tuple[int, int, str, np.ndarray]], min_matches: int) -> bool:
