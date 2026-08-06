@@ -7,6 +7,7 @@ import re
 import subprocess
 import webbrowser
 from pathlib import Path
+from urllib.parse import unquote
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -71,6 +72,10 @@ MAX_INLINE_DIFF_CHARS = 20_000
 EXTENSION_RE = re.compile(r"^\.[a-z0-9][a-z0-9._+-]{0,15}$")
 READ_CHUNK_SIZE = 1024 * 1024
 DUBIOUS_OWNERSHIP_RE = re.compile(r"detected dubious ownership in repository at '([^']+)'")
+WIKI_LINK_RE = re.compile(r"!?\[\[([^\]]+)\]\]")
+MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+SERVER_SETTINGS_PATH = Path(os.environ.get("VISUAL_DIFF_SETTINGS_PATH", Path(__file__).resolve().parents[1] / ".visual-diff-settings.json"))
+MAX_OBSIDIAN_LINKS = 500
 
 
 @app.get("/api/health")
@@ -232,15 +237,44 @@ async def get_diff_result(result_id: str, diff_threshold: float = 0.1) -> DiffRe
     return _build_cached_diff_response(result_id, cached, diff_threshold)
 
 
+@app.get("/api/settings/obsidian")
+def get_obsidian_settings() -> JSONResponse:
+    settings = _load_server_settings()
+    return JSONResponse({"obsidian_folder": settings.get("obsidian_folder", "")})
+
+
+@app.put("/api/settings/obsidian")
+def update_obsidian_settings(payload: dict) -> JSONResponse:
+    raw_folder = str(payload.get("obsidian_folder") or "").strip()
+    if raw_folder:
+        folder = Path(raw_folder).expanduser()
+        try:
+            folder = folder.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=422, detail="Obsidianフォルダーが見つかりません") from exc
+        if not folder.is_dir():
+            raise HTTPException(status_code=422, detail="Obsidianフォルダーはディレクトリを指定してください")
+        raw_folder = str(folder)
+    settings = _load_server_settings()
+    settings["obsidian_folder"] = raw_folder
+    _save_server_settings(settings)
+    return JSONResponse({"obsidian_folder": raw_folder})
+
+
 @app.post("/api/git/images")
 def git_images(payload: dict) -> JSONResponse:
-    folder = _payload_folder(payload)
+    folder, source_markdown = _payload_git_scope(payload)
     repo = _git_repo_root(folder)
-    files = _changed_image_files(repo, folder)
+    # A Markdown root may link to assets in another vault folder. Enumerate
+    # the whole repository first, then apply the relationship filter below.
+    files = _changed_image_files(repo, repo if source_markdown else folder)
+    if source_markdown:
+        files = _filter_related_git_files(repo, files, source_markdown)
     return JSONResponse(
         {
             "folder": str(folder),
             "repo_root": str(repo),
+            "source_markdown": source_markdown,
             "files": files,
         }
     )
@@ -248,15 +282,18 @@ def git_images(payload: dict) -> JSONResponse:
 
 @app.post("/api/git/files")
 def git_files(payload: dict) -> JSONResponse:
-    folder = _payload_folder(payload)
+    folder, source_markdown = _payload_git_scope(payload)
     repo = _git_repo_root(folder)
     text_extensions = _text_extensions_from_payload(payload)
-    files = _changed_files(repo, folder, text_extensions)
+    files = _changed_files(repo, repo if source_markdown else folder, text_extensions)
+    if source_markdown:
+        files = _filter_related_git_files(repo, files, source_markdown)
     return JSONResponse(
         {
             "folder": str(folder),
             "repo_root": str(repo),
             "text_extensions": sorted(text_extensions),
+            "source_markdown": source_markdown,
             "files": files,
         }
     )
@@ -505,6 +542,11 @@ def _open_browser(url: str) -> None:
 
 
 def _payload_folder(payload: dict) -> Path:
+    folder, _ = _payload_git_scope(payload)
+    return folder
+
+
+def _payload_git_scope(payload: dict) -> tuple[Path, str | None]:
     raw_folder = str(payload.get("folder") or "").strip()
     if not raw_folder:
         raise HTTPException(status_code=422, detail="folder is required")
@@ -512,10 +554,134 @@ def _payload_folder(payload: dict) -> Path:
     try:
         folder = folder.resolve(strict=True)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Folder not found") from exc
-    if not folder.is_dir():
-        raise HTTPException(status_code=422, detail="folder must be a directory")
-    return folder
+        raise HTTPException(status_code=404, detail="Folder or Markdown file not found") from exc
+    if folder.is_dir():
+        return folder, None
+    if folder.is_file() and folder.suffix.lower() == ".md":
+        return folder.parent, str(folder)
+    raise HTTPException(status_code=422, detail="folder must be a directory or a Markdown file")
+
+
+def _load_server_settings() -> dict:
+    try:
+        value = json.loads(SERVER_SETTINGS_PATH.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_server_settings(settings: dict) -> None:
+    SERVER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = SERVER_SETTINGS_PATH.with_suffix(f"{SERVER_SETTINGS_PATH.suffix}.tmp")
+    temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(SERVER_SETTINGS_PATH)
+
+
+def _filter_related_git_files(repo: Path, files: list[dict], source_markdown: str) -> list[dict]:
+    source_path = Path(source_markdown).resolve()
+    try:
+        source_rel = source_path.relative_to(repo).as_posix()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Markdown file must be inside the git repository") from exc
+    related_paths = _related_markdown_paths(repo, source_rel)
+    return [item for item in files if item["path"] in related_paths or item["head_path"] in related_paths]
+
+
+def _related_markdown_paths(repo: Path, source_rel: str) -> set[str]:
+    settings = _load_server_settings()
+    vault_root = None
+    configured_vault = str(settings.get("obsidian_folder") or "").strip()
+    if configured_vault:
+        candidate = Path(configured_vault).expanduser()
+        if candidate.is_dir():
+            try:
+                candidate = candidate.resolve()
+                if candidate == repo or candidate in repo.parents:
+                    vault_root = candidate
+            except OSError:
+                vault_root = None
+
+    related: set[str] = set()
+    pending = [source_rel]
+    while pending and len(related) < MAX_OBSIDIAN_LINKS:
+        current_rel = pending.pop(0)
+        if current_rel in related:
+            continue
+        related.add(current_rel)
+        current_path = repo / current_rel
+        contents: list[bytes] = []
+        if current_path.is_file():
+            contents.append(_read_file_limited(current_path, MAX_TEXT_BYTES, current_rel))
+        try:
+            contents.append(_git_show(repo, current_rel, max_bytes=MAX_TEXT_BYTES))
+        except HTTPException:
+            pass
+        for content in contents:
+            try:
+                text, _ = _decode_git_text(content)
+            except HTTPException:
+                continue
+            for target in _extract_markdown_links(text):
+                resolved = _resolve_obsidian_link(repo, current_rel, target, vault_root)
+                if resolved and resolved not in related and len(related) + len(pending) < MAX_OBSIDIAN_LINKS:
+                    pending.append(resolved)
+    return related
+
+
+def _extract_markdown_links(text: str) -> list[str]:
+    targets: list[str] = []
+    for match in WIKI_LINK_RE.finditer(text):
+        target = match.group(1).split("|", 1)[0].split("#", 1)[0].strip()
+        if target:
+            targets.append(target)
+    for match in MARKDOWN_LINK_RE.finditer(text):
+        target = match.group(1).strip().split()[0].strip("<>").split("#", 1)[0].strip()
+        if target and not target.startswith(("#", "http://", "https://", "mailto:", "data:")):
+            targets.append(target)
+    return targets
+
+
+def _resolve_obsidian_link(repo: Path, source_rel: str, raw_target: str, vault_root: Path | None) -> str | None:
+    target = unquote(raw_target.replace("\\", "/")).strip().lstrip("/")
+    if not target or target.startswith(("#", "http://", "https://", "mailto:", "data:")):
+        return None
+    target_path = Path(target)
+    source_parent = (repo / source_rel).parent
+    candidates = [source_parent / target_path, repo / target_path]
+    if vault_root:
+        candidates.insert(1, vault_root / target_path)
+    # Obsidian often displays a drawing as `name.excalidraw`, while the
+    # repository stores the companion Markdown file as `name.excalidraw.md`.
+    # Resolve both spellings so a Markdown-rooted Git scope includes it.
+    if target_path.suffix.lower() == ".excalidraw":
+        suffixes = ["", ".md"]
+    else:
+        suffixes = [""] if target_path.suffix else ["", ".md"]
+    for candidate_base in candidates:
+        for suffix in suffixes:
+            candidate = (candidate_base.parent / f"{candidate_base.name}{suffix}").resolve()
+            if repo == candidate or repo in candidate.parents:
+                try:
+                    if candidate.is_file():
+                        return candidate.relative_to(repo).as_posix()
+                except OSError:
+                    continue
+    if vault_root:
+        if target_path.suffix.lower() == ".excalidraw":
+            names = [target_path.name, f"{target_path.name}.md"]
+        elif target_path.suffix:
+            names = [target_path.name]
+        else:
+            names = [target_path.name, f"{target_path.name}.md"]
+        for name in names:
+            try:
+                for candidate in vault_root.rglob(name):
+                    resolved = candidate.resolve()
+                    if candidate.is_file() and (repo == resolved or repo in resolved.parents):
+                        return resolved.relative_to(repo).as_posix()
+            except OSError:
+                break
+    return None
 
 
 def _git_repo_root(folder: Path) -> Path:

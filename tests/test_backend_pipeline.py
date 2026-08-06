@@ -6,6 +6,7 @@ import tempfile
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -525,6 +526,58 @@ class TestBackendPipeline(unittest.TestCase):
             self.assertEqual(compact_response.status_code, 200, compact_response.text)
             self.assertNotIn("text_head", compact_response.json())
             self.assertNotIn("text_current", compact_response.json())
+
+    def test_git_markdown_scope_filters_to_obsidian_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_dir = os.path.join(tmp, "assets")
+            notes_dir = os.path.join(tmp, "notes")
+            os.makedirs(assets_dir)
+            os.makedirs(notes_dir)
+            markdown_path = os.path.join(notes_dir, "guide.md")
+            child_path = os.path.join(notes_dir, "child.md")
+            linked_image = os.path.join(assets_dir, "linked.svg")
+            child_image = os.path.join(assets_dir, "child.svg")
+            unrelated_image = os.path.join(assets_dir, "unrelated.svg")
+            with open(markdown_path, "w", encoding="utf-8") as stream:
+                stream.write("# Guide\n![[assets/linked.svg]]\n[[child]]\n")
+            with open(child_path, "w", encoding="utf-8") as stream:
+                stream.write("# Child\n![child](assets/child.svg)\n")
+            for path in (linked_image, child_image, unrelated_image):
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="10" height="10"/></svg>')
+            self._git(tmp, "init", "--quiet")
+            self._git(tmp, "config", "user.email", "review@example.com")
+            self._git(tmp, "config", "user.name", "Review")
+            self._git(tmp, "add", ".")
+            self._git(tmp, "commit", "--quiet", "-m", "initial vault")
+            with open(linked_image, "a", encoding="utf-8") as stream:
+                stream.write("<!-- changed -->")
+            with open(child_image, "a", encoding="utf-8") as stream:
+                stream.write("<!-- changed -->")
+            with open(unrelated_image, "a", encoding="utf-8") as stream:
+                stream.write("<!-- unrelated -->")
+
+            with patch("backend.app.main.SERVER_SETTINGS_PATH", Path(tmp) / "settings.json"):
+                settings_response = self.client.put("/api/settings/obsidian", json={"obsidian_folder": tmp})
+                self.assertEqual(settings_response.status_code, 200, settings_response.text)
+                files_response = self.client.post(
+                    "/api/git/files",
+                    json={"folder": markdown_path, "text_extensions": [".md"]},
+                )
+
+            self.assertEqual(files_response.status_code, 200, files_response.text)
+            body = files_response.json()
+            self.assertTrue(body["source_markdown"].endswith("guide.md"))
+            self.assertEqual({item["path"] for item in body["files"]}, {"assets/linked.svg", "assets/child.svg"})
+
+    def test_obsidian_settings_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("backend.app.main.SERVER_SETTINGS_PATH", Path(tmp) / "settings.json"):
+                put_response = self.client.put("/api/settings/obsidian", json={"obsidian_folder": tmp})
+                get_response = self.client.get("/api/settings/obsidian")
+            self.assertEqual(put_response.status_code, 200, put_response.text)
+            self.assertEqual(get_response.status_code, 200, get_response.text)
+            self.assertEqual(get_response.json()["obsidian_folder"], str(Path(tmp).resolve()))
 
     def test_git_treats_excalidraw_markdown_as_image(self):
         with tempfile.TemporaryDirectory() as tmp:

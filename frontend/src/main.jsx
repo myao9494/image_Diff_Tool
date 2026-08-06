@@ -76,6 +76,9 @@ function App() {
   const [extensionSettingsOpen, setExtensionSettingsOpen] = useState(false);
   const [textExtensions, setTextExtensions] = useState(loadTextExtensions);
   const [extensionDraft, setExtensionDraft] = useState(() => loadTextExtensions().join(", "));
+  const [obsidianFolder, setObsidianFolder] = useState("");
+  const [obsidianFolderDraft, setObsidianFolderDraft] = useState("");
+  const [obsidianSettingsBusy, setObsidianSettingsBusy] = useState(false);
   const [activeTab, setActiveTab] = useState("files");
   const [left, setLeft] = useState(null);
   const [right, setRight] = useState(null);
@@ -295,12 +298,43 @@ function App() {
   }, [textExtensions]);
 
   useEffect(() => {
+    getJson("/settings/obsidian").then((settings) => {
+      const folder = String(settings.obsidian_folder || "");
+      setObsidianFolder(folder);
+      setObsidianFolderDraft(folder);
+    }).catch(() => {
+      // Older running servers may not expose settings yet; the rest of the UI remains usable.
+    });
+  }, []);
+
+  useEffect(() => {
     persistLocalStorage(GIT_FOLDER_HISTORY_STORAGE_KEY, gitFolderHistory);
   }, [gitFolderHistory]);
 
   useEffect(() => {
     persistLocalStorage(GIT_TEXT_MEMO_STORAGE_KEY, gitTextMemos);
   }, [gitTextMemos]);
+
+  async function saveObsidianFolderSetting() {
+    setObsidianSettingsBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/settings/obsidian`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ obsidian_folder: obsidianFolderDraft.trim() }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || `設定保存に失敗しました（${response.status}）`);
+      const folder = String(body.obsidian_folder || "");
+      setObsidianFolder(folder);
+      setObsidianFolderDraft(folder);
+      setGitError("");
+    } catch (err) {
+      setGitError(`Obsidianフォルダー設定を保存できませんでした: ${err.message}`);
+    } finally {
+      setObsidianSettingsBusy(false);
+    }
+  }
 
   function selectCategory(nextCategory) {
     setCategory(nextCategory);
@@ -481,6 +515,24 @@ function App() {
                       }}
                     >
                       初期値
+                    </button>
+                  </div>
+                  <label className="obsidian-folder-setting">
+                    <span>Obsidianフォルダー（サーバー保存）</span>
+                    <input
+                      type="text"
+                      value={obsidianFolderDraft}
+                      placeholder="/path/to/obsidian-vault"
+                      onChange={(event) => setObsidianFolderDraft(event.target.value)}
+                    />
+                  </label>
+                  <small>Markdownファイルを指定したときのリンク解決に使用します。</small>
+                  <div>
+                    <button type="button" disabled={obsidianSettingsBusy} onClick={saveObsidianFolderSetting}>
+                      {obsidianSettingsBusy ? "保存中…" : "サーバーへ保存"}
+                    </button>
+                    <button type="button" onClick={() => setObsidianFolderDraft(obsidianFolder)}>
+                      戻す
                     </button>
                   </div>
                 </div>
@@ -1055,6 +1107,25 @@ file: 保存したい添付ファイル`}
         />
 
         <ApiEndpoint
+          method="GET"
+          path="/api/settings/obsidian"
+          purpose="サーバーに保存されているObsidianフォルダー設定を取得する。"
+          request="リクエストボディなし。"
+          response={`{ "obsidian_folder": "/absolute/path/to/obsidian-vault" }`}
+          notes="設定はブラウザではなくBackendの設定ファイルに保存される。未設定時は空文字列。"
+        />
+
+        <ApiEndpoint
+          method="PUT"
+          path="/api/settings/obsidian"
+          purpose="Obsidianフォルダーを検証してサーバーへ保存する。"
+          request={`Content-Type: application/json
+{ "obsidian_folder": "/absolute/path/to/obsidian-vault" }`}
+          response={`{ "obsidian_folder": "/absolute/path/to/obsidian-vault" }`}
+          notes="空文字列を送ると設定を解除する。存在しないパスやファイルを指定した場合は422。"
+        />
+
+        <ApiEndpoint
           method="POST"
           path="/api/git/files"
           purpose="設定された拡張子に従い、変更画像と変更テキストを追加・削除・未追跡も含めて一覧する。"
@@ -1170,12 +1241,12 @@ function GitToolbar({
   return (
     <>
       <label className="git-folder">
-        <span>フォルダ</span>
+        <span>フォルダ / Markdown</span>
         <div className="git-folder-input-row">
           <input
             type="text"
             value={folder}
-            placeholder="/path/to/git/repo/or/subfolder"
+            placeholder="/path/to/git/repo/or/subfolder または .md"
             onChange={(event) => setFolder(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") onLoad();
@@ -1254,6 +1325,7 @@ function GitToolbar({
         <strong>{currentFile?.path ?? "未選択"}</strong>
         <small>
           {info ? `${files.length}件の変更 / HTML出力 ${exportCount}件` : "git管理フォルダを指定"}
+          {info?.source_markdown ? " / Markdown起点で関連ファイルのみ" : ""}
         </small>
       </div>
     </>
