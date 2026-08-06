@@ -7,7 +7,7 @@ import re
 import subprocess
 import webbrowser
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -297,6 +297,48 @@ def git_files(payload: dict) -> JSONResponse:
             "files": files,
         }
     )
+
+
+@app.post("/api/git/markdown")
+def git_markdown_diff(payload: dict, request: Request) -> JSONResponse:
+    """Create a deep link for an Obsidian Markdown-rooted Git diff.
+
+    Obsidian integrations can call this endpoint with the active note path,
+    then open ``diff_url``. The web UI consumes the same path and loads the
+    Markdown diff plus all changed files reachable from its links.
+    """
+    raw_markdown = str(
+        payload.get("markdown_path")
+        or payload.get("markdown_file")
+        or payload.get("path")
+        or payload.get("folder")
+        or ""
+    ).strip()
+    if not raw_markdown:
+        raise HTTPException(status_code=422, detail="markdown_path is required")
+    folder, source_markdown = _payload_git_scope({"folder": raw_markdown})
+    if not source_markdown:
+        raise HTTPException(status_code=422, detail="markdown_path must point to a Markdown file")
+    repo = _git_repo_root(folder)
+    text_extensions = _text_extensions_from_payload(payload)
+    files = _changed_files(repo, repo, text_extensions)
+    files = _filter_related_git_files(repo, files, source_markdown)
+    return JSONResponse(
+        {
+            "folder": str(folder),
+            "repo_root": str(repo),
+            "source_markdown": source_markdown,
+            "text_extensions": sorted(text_extensions),
+            "files": files,
+            "diff_url": f"{str(request.base_url).rstrip('/')}/?markdown_path={quote(source_markdown, safe='')}",
+        }
+    )
+
+
+@app.get("/api/git/markdown")
+def get_git_markdown_diff(request: Request, path: str | None = None, markdown_path: str | None = None) -> JSONResponse:
+    """GET convenience form for integrations that only have a note path."""
+    return git_markdown_diff({"markdown_path": markdown_path or path or ""}, request)
 
 
 @app.post("/api/git/item")

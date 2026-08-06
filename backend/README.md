@@ -14,6 +14,7 @@ API:
 - `POST /api/rediff`
 - `POST /api/git/images`
 - `POST /api/git/files`
+- `POST /api/git/markdown` / `GET /api/git/markdown?path=...`
 - `POST /api/git/item`
 - `POST /api/git/diff`
 
@@ -21,6 +22,8 @@ The backend also serves the built web app from `../frontend/dist` at `/`.
 The normal launch disables Uvicorn's file watcher to reduce idle CPU and avoid a second process. Set `VISUAL_DIFF_RELOAD=1` only during backend development when automatic reload is useful.
 
 `/api/diff` performs conversion, alignment, and initial diff generation. It normally returns a `result_id` that points to bounded aligned images in memory. If a pair is too large for the cache, `result_id` is `null`. `/api/rediff` accepts that `result_id` plus a new threshold and regenerates only the overlay/mask/rect metrics. If the in-memory entry has been evicted, callers can fall back by sending `image_a` and `image_b_aligned` directly.
+
+Obsidian integrations can send the active note path to `/api/git/markdown`. The response includes a `diff_url` such as `/?markdown_path=...`; opening it loads the Markdown diff and changed linked images/diagrams recursively. The endpoint accepts `markdown_path`, `markdown_file`, `path`, or `folder` in a JSON request.
 
 `/api/analyze` returns page metadata and conversion warnings without rasterizing every page of PDF/TIFF files. `/api/convert` and `/api/diff` rasterize only the requested page. Excalidraw support is implemented by the built-in Python renderer, including Obsidian `compressed-json` blocks; unsupported or approximated Excalidraw features are surfaced through `warnings` and `conversion_warnings`. Draw.io SVG `foreignObject` labels are converted to portable SVG text with line breaks before rasterization.
 

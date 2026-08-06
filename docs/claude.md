@@ -40,6 +40,7 @@
 - `POST /api/rediff`: `result_id` と新しいしきい値から差分オーバーレイとマスクだけを再生成する。キャッシュが利用できない場合は `image_a` と `image_b_aligned` を直接送るフォールバックも受け付ける。
 - `POST /api/git/images`: Git管理フォルダ配下の変更画像を列挙する。
 - `POST /api/git/files`: Git管理フォルダ配下の変更画像・設定対象テキストを列挙する。
+- `POST /api/git/markdown` / `GET /api/git/markdown`: Obsidianの現在ノートを受け取り、Markdown起点の変更一覧とDIFF画面用の `diff_url` を返す。
 - `GET/PUT /api/settings/obsidian`: ObsidianフォルダーをBackend設定ファイルへ保存・取得する。Git欄にMarkdownファイルを指定した場合、このフォルダーを起点に関連リンクを解決する。
 - `POST /api/git/item`: 片側画像プレビュー、または構造化されたテキスト左右差分を返す。
 - `POST /api/git/diff`: 現在の画像とHEAD側画像を比較する。リネーム/コピーでは `head_path` がHEAD側パスになる。

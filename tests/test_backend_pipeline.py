@@ -564,11 +564,21 @@ class TestBackendPipeline(unittest.TestCase):
                     "/api/git/files",
                     json={"folder": markdown_path, "text_extensions": [".md"]},
                 )
+                markdown_response = self.client.post(
+                    "/api/git/markdown",
+                    json={"markdown_path": markdown_path, "text_extensions": [".md"]},
+                )
+                get_markdown_response = self.client.get("/api/git/markdown", params={"path": markdown_path})
 
             self.assertEqual(files_response.status_code, 200, files_response.text)
             body = files_response.json()
             self.assertTrue(body["source_markdown"].endswith("guide.md"))
             self.assertEqual({item["path"] for item in body["files"]}, {"assets/linked.svg", "assets/child.svg"})
+            self.assertEqual(markdown_response.status_code, 200, markdown_response.text)
+            markdown_body = markdown_response.json()
+            self.assertIn("markdown_path=", markdown_body["diff_url"])
+            self.assertEqual({item["path"] for item in markdown_body["files"]}, {"assets/linked.svg", "assets/child.svg"})
+            self.assertEqual(get_markdown_response.status_code, 200, get_markdown_response.text)
 
     def test_obsidian_settings_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

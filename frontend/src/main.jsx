@@ -308,6 +308,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const markdownPath = markdownPathFromLocation();
+    if (!markdownPath) return;
+    setActiveTab("git");
+    setGitFolder(markdownPath);
+    loadGitImages(markdownPath);
+  }, []);
+
+  useEffect(() => {
     persistLocalStorage(GIT_FOLDER_HISTORY_STORAGE_KEY, gitFolderHistory);
   }, [gitFolderHistory]);
 
@@ -768,7 +776,7 @@ function App() {
     </main>
   );
 
-  async function loadGitImages() {
+  async function loadGitImages(folderOverride = gitFolder) {
     const requestId = gitRequestIdRef.current + 1;
     gitRequestIdRef.current = requestId;
     setGitBusy(true);
@@ -776,10 +784,11 @@ function App() {
     setGitResult(null);
     setGitItem(null);
     try {
-      const info = await postJson("/git/files", { folder: gitFolder, text_extensions: textExtensions });
+      const folder = String(folderOverride || "").trim();
+      const info = await postJson("/git/files", { folder, text_extensions: textExtensions });
       if (requestId !== gitRequestIdRef.current) return;
       setGitInfo(info);
-      const normalizedFolder = gitFolder.trim();
+      const normalizedFolder = folder;
       if (normalizedFolder) {
         setGitFolderHistory((history) => [normalizedFolder, ...history.filter((item) => item !== normalizedFolder)].slice(0, 12));
       }
@@ -787,7 +796,7 @@ function App() {
       const nextFiles = (info.files ?? []).filter((file) => file.comparable);
       setGitIndex(0);
       if (nextFiles[0]) {
-        await loadGitFile(nextFiles[0], requestId);
+        await loadGitFile(nextFiles[0], requestId, folder);
       }
     } catch (err) {
       if (requestId === gitRequestIdRef.current) setGitError(err.message);
@@ -815,9 +824,9 @@ function App() {
     }
   }
 
-  async function compareGitFile(file, requestId = gitRequestIdRef.current, selectedCategory = category) {
+  async function compareGitFile(file, requestId = gitRequestIdRef.current, selectedCategory = category, folderOverride = gitFolder) {
     const nextResult = await postJson("/git/diff", {
-      folder: gitFolder,
+      folder: folderOverride,
       path: file.path,
       head_path: file.head_path,
       category: selectedCategory,
@@ -828,13 +837,13 @@ function App() {
     }
   }
 
-  async function loadGitFile(file, requestId = gitRequestIdRef.current) {
+  async function loadGitFile(file, requestId = gitRequestIdRef.current, folderOverride = gitFolder) {
     if (file.kind === "image" && file.diffable) {
-      await compareGitFile(file, requestId);
+      await compareGitFile(file, requestId, category, folderOverride);
       return;
     }
     const nextItem = await postJson("/git/item", {
-      folder: gitFolder,
+      folder: folderOverride,
       text_extensions: textExtensions,
       include_text: false,
       ...file,
@@ -1140,6 +1149,23 @@ file: 保存したい添付ファイル`}
   }]
 }`}
           notes="画像拡張子は常に対象。text_extensionsは最大50件で、先頭のドットは省略できる。"
+        />
+
+        <ApiEndpoint
+          method="POST / GET"
+          path="/api/git/markdown"
+          purpose="Obsidianの現在Markdownノートを起点に関連Git差分を取得し、DIFF画面へのリンクを返す。"
+          request={`POST JSON:
+{ "markdown_path": "/absolute/path/to/note.md", "text_extensions": [".md", ".txt"] }
+
+GET:
+/api/git/markdown?path=%2Fabsolute%2Fpath%2Fto%2Fnote.md`}
+          response={`{
+  "source_markdown": "/absolute/path/to/note.md",
+  "files": [{ "path": "assets/diagram.svg", "kind": "image" }],
+  "diff_url": "/?markdown_path=%2Fabsolute%2Fpath%2Fto%2Fnote.md"
+}`}
+          notes="Obsidianの右クリックメニューはdiff_urlを開く。Web UIはMarkdown本文と、リンクを再帰的にたどった変更画像・図面を表示する。"
         />
 
         <ApiEndpoint
@@ -2402,6 +2428,11 @@ function memoPayloadIdFromHash() {
 
 function externalResultIdFromLocation() {
   return new URLSearchParams(window.location.search).get("result_id");
+}
+
+function markdownPathFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("markdown_path") || params.get("markdown_file") || "";
 }
 
 function externalFileData(side, result) {

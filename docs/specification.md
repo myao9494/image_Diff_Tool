@@ -57,6 +57,7 @@
 - `POST /api/convert`: 指定された特定ページまたは単一ファイルをPNGにラスタライズする。
 - `POST /api/git/images`: 指定フォルダ配下のGit変更画像を列挙する。
 - `POST /api/git/files`: 指定フォルダ配下のGit変更画像と設定対象テキストを、追加・削除・未追跡を含めて列挙する。
+- `POST /api/git/markdown`: ObsidianのMarkdownファイルパスを受け取り、関連変更ファイル一覧とDIFF画面用の `diff_url` を返す。`GET /api/git/markdown?path=...` も同じ処理を行う。
 - `GET /api/settings/obsidian`: サーバーに保存されたObsidianフォルダーを取得する。
 - `PUT /api/settings/obsidian`: Obsidianフォルダーを検証してサーバーへ保存する。空文字列で解除する。
 - `POST /api/git/item`: Git変更の片側画像プレビュー、または構造化されたテキスト左右差分を返す。
