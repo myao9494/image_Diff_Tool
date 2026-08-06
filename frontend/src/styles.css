@@ -266,6 +266,7 @@ p {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  position: relative;
 }
 
 .git-folder span,
@@ -282,6 +283,77 @@ p {
   padding: 0 10px;
   background: #1e293b;
   color: #e2e8f0;
+}
+
+.git-folder-input-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.git-folder-input-row input {
+  padding-right: 38px;
+}
+
+.git-folder-history-toggle {
+  position: absolute;
+  right: 4px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.git-folder-history-toggle:hover:not(:disabled) {
+  background: #334155;
+  color: #fff;
+}
+
+.git-folder-history-toggle:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.git-folder-history {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  background: #111827;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+}
+
+.git-folder-history button {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #e2e8f0;
+  cursor: pointer;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-folder-history button:hover,
+.git-folder-history button[aria-selected="true"] {
+  background: #1e293b;
+  color: #fff;
 }
 
 .git-nav {
@@ -320,6 +392,149 @@ p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.export-selection-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 6, 23, 0.72);
+}
+
+.export-selection-modal {
+  width: min(760px, 100%);
+  max-height: min(760px, 90vh);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #111827;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+
+.export-selection-modal > header,
+.export-selection-modal > footer {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #1e293b;
+}
+
+.export-selection-modal > header {
+  border-bottom: 1px solid #334155;
+}
+
+.export-selection-modal h2 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 18px;
+}
+
+.export-selection-modal p {
+  margin: 4px 0 0;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.modal-close-button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  background: #0f172a;
+  color: #e2e8f0;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.export-selection-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.export-selection-item {
+  min-height: 52px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #283548;
+  cursor: pointer;
+}
+
+.export-selection-item:hover {
+  background: #1e293b;
+}
+
+.export-selection-item input {
+  width: 17px;
+  height: 17px;
+  accent-color: #3b82f6;
+}
+
+.export-selection-item span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.export-selection-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-selection-item small {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.export-selection-item b {
+  min-width: 38px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.export-selection-item b.included {
+  background: #166534;
+  color: #dcfce7;
+}
+
+.export-selection-item b.excluded {
+  background: #4b5563;
+  color: #d1d5db;
+}
+
+.export-selection-empty {
+  padding: 24px;
+  text-align: center;
+}
+
+.export-selection-modal > footer {
+  justify-content: flex-end;
+  border-top: 1px solid #334155;
+}
+
+.export-selection-modal > footer button {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  background: #111827;
+  color: #e2e8f0;
+  cursor: pointer;
 }
 
 .file-picker {

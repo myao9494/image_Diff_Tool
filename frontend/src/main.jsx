@@ -10,6 +10,7 @@ import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
   BookOpenText,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clipboard,
@@ -50,6 +51,7 @@ const CLIPBOARD_IMAGE_SCALE = 2;
 const DEFAULT_TEXT_EXTENSIONS = [".md", ".txt", ".csv", ".json", ".yaml", ".yml"];
 const GIT_EXTENSION_STORAGE_KEY = "visual-diff-git-text-extensions";
 const GIT_TEXT_MEMO_STORAGE_KEY = "visual-diff-git-text-memos";
+const GIT_FOLDER_HISTORY_STORAGE_KEY = "visual-diff-git-folder-history";
 const MEMO_DEFAULTS = {
   text: "めも",
   opacity: 60,
@@ -88,7 +90,8 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [activeSide, setActiveSide] = useState("left");
-  const [gitFolder, setGitFolder] = useState("");
+  const [gitFolder, setGitFolder] = useState(loadLastGitFolder);
+  const [gitFolderHistory, setGitFolderHistory] = useState(loadGitFolderHistory);
   const [gitInfo, setGitInfo] = useState(null);
   const [gitIndex, setGitIndex] = useState(0);
   const [gitResult, setGitResult] = useState(null);
@@ -97,6 +100,7 @@ function App() {
   const [gitExportExcluded, setGitExportExcluded] = useState([]);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportNotice, setExportNotice] = useState("");
+  const [exportSelectionOpen, setExportSelectionOpen] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState("");
   const requestIdRef = useRef(0);
@@ -289,6 +293,10 @@ function App() {
   useEffect(() => {
     persistLocalStorage(GIT_EXTENSION_STORAGE_KEY, textExtensions);
   }, [textExtensions]);
+
+  useEffect(() => {
+    persistLocalStorage(GIT_FOLDER_HISTORY_STORAGE_KEY, gitFolderHistory);
+  }, [gitFolderHistory]);
 
   useEffect(() => {
     persistLocalStorage(GIT_TEXT_MEMO_STORAGE_KEY, gitTextMemos);
@@ -533,6 +541,7 @@ function App() {
         ) : (
           <GitToolbar
             folder={gitFolder}
+            folderHistory={gitFolderHistory}
             setFolder={(value) => {
               gitRequestIdRef.current += 1;
               setGitFolder(value);
@@ -554,19 +563,38 @@ function App() {
             onPrevious={() => selectGitIndex(gitIndex - 1)}
             onNext={() => selectGitIndex(gitIndex + 1)}
             onSelect={(index) => selectGitIndex(index)}
+            onSelectFolder={(value) => {
+              gitRequestIdRef.current += 1;
+              setGitFolder(value);
+              setGitInfo(null);
+              setGitIndex(0);
+              setGitResult(null);
+              setGitItem(null);
+              setGitExportExcluded([]);
+              setGitError("");
+              setExportNotice("");
+              setGitBusy(false);
+            }}
             onMemo={() => openGitMemo()}
             canMemo={currentGitFile?.kind === "image" && Boolean(gitResult || gitItem?.image_head || gitItem?.image_current)}
             onExport={exportGitHtml}
             canExport={Boolean(exportableGitFiles.length)}
             exportBusy={exportBusy}
-            includeCurrent={Boolean(currentGitFile && !gitExportExcluded.includes(currentGitFile.path))}
-            onIncludeCurrent={(included) => {
-              if (!currentGitFile) return;
-              setGitExportExcluded((paths) => included
-                ? paths.filter((path) => path !== currentGitFile.path)
-                : [...new Set([...paths, currentGitFile.path])]);
-            }}
+            onOpenExportSelection={() => setExportSelectionOpen(true)}
             exportCount={exportableGitFiles.length}
+          />
+        )}
+        {activeTab === "git" && exportSelectionOpen && (
+          <ExportSelectionModal
+            files={comparableGitFiles}
+            excludedPaths={gitExportExcluded}
+            busy={gitBusy || exportBusy}
+            onToggle={(path, included) => setGitExportExcluded((paths) => included
+              ? paths.filter((item) => item !== path)
+              : [...new Set([...paths, path])])}
+            onIncludeAll={() => setGitExportExcluded([])}
+            onExcludeAll={() => setGitExportExcluded(comparableGitFiles.map((file) => file.path))}
+            onClose={() => setExportSelectionOpen(false)}
           />
         )}
         {(activeTab === "files" || currentGitFile?.kind === "image") && <div className="control">
@@ -699,6 +727,10 @@ function App() {
       const info = await postJson("/git/files", { folder: gitFolder, text_extensions: textExtensions });
       if (requestId !== gitRequestIdRef.current) return;
       setGitInfo(info);
+      const normalizedFolder = gitFolder.trim();
+      if (normalizedFolder) {
+        setGitFolderHistory((history) => [normalizedFolder, ...history.filter((item) => item !== normalizedFolder)].slice(0, 12));
+      }
       setGitExportExcluded([]);
       const nextFiles = (info.files ?? []).filter((file) => file.comparable);
       setGitIndex(0);
@@ -1113,7 +1145,9 @@ function ApiEndpoint({ method, path, purpose, request, response, notes }) {
 
 function GitToolbar({
   folder,
+  folderHistory,
   setFolder,
+  onSelectFolder,
   info,
   files,
   currentFile,
@@ -1128,23 +1162,56 @@ function GitToolbar({
   onExport,
   canExport,
   exportBusy,
-  includeCurrent,
-  onIncludeCurrent,
+  onOpenExportSelection,
   exportCount,
 }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+
   return (
     <>
       <label className="git-folder">
         <span>フォルダ</span>
-        <input
-          type="text"
-          value={folder}
-          placeholder="/path/to/git/repo/or/subfolder"
-          onChange={(event) => setFolder(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") onLoad();
-          }}
-        />
+        <div className="git-folder-input-row">
+          <input
+            type="text"
+            value={folder}
+            placeholder="/path/to/git/repo/or/subfolder"
+            onChange={(event) => setFolder(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onLoad();
+            }}
+          />
+          <button
+            type="button"
+            className="git-folder-history-toggle"
+            title="最近使ったフォルダ"
+            aria-label="最近使ったフォルダ"
+            aria-expanded={historyOpen}
+            disabled={!folderHistory.length}
+            onClick={() => setHistoryOpen((open) => !open)}
+          >
+            <ChevronDown size={16} />
+          </button>
+          {historyOpen && folderHistory.length > 0 && (
+            <div className="git-folder-history" role="listbox" aria-label="最近使ったフォルダ">
+              {folderHistory.map((item) => (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={item === folder}
+                  key={item}
+                  title={item}
+                  onClick={() => {
+                    onSelectFolder(item);
+                    setHistoryOpen(false);
+                  }}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </label>
       <button className="primary" disabled={!folder || busy} onClick={onLoad}>
         {busy ? <Loader2 className="spin" size={18} /> : <FolderOpen size={18} />}
@@ -1180,15 +1247,9 @@ function GitToolbar({
         {exportBusy ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
         HTML保存
       </button>
-      <label className={`git-export-toggle ${currentFile ? "" : "disabled"}`}>
-        <input
-          type="checkbox"
-          checked={includeCurrent}
-          disabled={!currentFile || busy || exportBusy}
-          onChange={(event) => onIncludeCurrent(event.target.checked)}
-        />
-        HTMLに含める
-      </label>
+      <button className="primary secondary export-selection-button" disabled={!files.length || busy || exportBusy} onClick={onOpenExportSelection}>
+        HTML出力対象 ({exportCount}/{files.length})
+      </button>
       <div className="git-meta">
         <strong>{currentFile?.path ?? "未選択"}</strong>
         <small>
@@ -1196,6 +1257,49 @@ function GitToolbar({
         </small>
       </div>
     </>
+  );
+}
+
+function ExportSelectionModal({ files, excludedPaths, busy, onToggle, onIncludeAll, onExcludeAll, onClose }) {
+  return (
+    <div className="export-selection-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="export-selection-modal" role="dialog" aria-modal="true" aria-labelledby="export-selection-title">
+        <header>
+          <div>
+            <h2 id="export-selection-title">HTML出力対象</h2>
+            <p>HTMLに含める変更ファイルを選択してください。</p>
+          </div>
+          <button type="button" className="modal-close-button" aria-label="閉じる" onClick={onClose}>×</button>
+        </header>
+        <div className="export-selection-list">
+          {files.length ? files.map((file) => {
+            const included = !excludedPaths.includes(file.path);
+            return (
+              <label className="export-selection-item" key={file.path}>
+                <input
+                  type="checkbox"
+                  checked={included}
+                  disabled={busy}
+                  onChange={(event) => onToggle(file.path, event.target.checked)}
+                />
+                <span>
+                  <strong>{file.path}</strong>
+                  <small>{file.kind === "text" ? "テキスト差分" : "画像差分"}</small>
+                </span>
+                <b className={included ? "included" : "excluded"}>{included ? "ON" : "OFF"}</b>
+              </label>
+            );
+          }) : <p className="export-selection-empty">対象ファイルがありません。</p>}
+        </div>
+        <footer>
+          <button type="button" onClick={onIncludeAll} disabled={busy || !files.length}>すべてON</button>
+          <button type="button" onClick={onExcludeAll} disabled={busy || !files.length}>すべてOFF</button>
+          <button type="button" className="primary" onClick={onClose}>閉じる</button>
+        </footer>
+      </section>
+    </div>
   );
 }
 
@@ -2031,6 +2135,20 @@ function loadGitTextMemos() {
   } catch {
     return {};
   }
+}
+
+function loadGitFolderHistory() {
+  try {
+    const value = JSON.parse(localStorage.getItem(GIT_FOLDER_HISTORY_STORAGE_KEY) || "[]");
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.map((item) => String(item).trim()).filter(Boolean))].slice(0, 12);
+  } catch {
+    return [];
+  }
+}
+
+function loadLastGitFolder() {
+  return loadGitFolderHistory()[0] ?? "";
 }
 
 function persistLocalStorage(key, value) {
