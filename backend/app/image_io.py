@@ -22,6 +22,7 @@ MAX_PAGE_COUNT = 60
 MAX_RASTER_PIXELS = 90_000_000
 MAX_TOTAL_RASTER_PIXELS = 180_000_000
 LZ_STRING_BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+SVG_DRAWIO_RASTER_SCALE = 2.5
 
 
 @dataclass(frozen=True)
@@ -135,7 +136,7 @@ def rasterize_upload_pages(
         return fmt, _rasterize_pdf(content, dpi=dpi, selected_pages=selected_pages)
     if fmt == "svg":
         _require_single_page(selected_pages)
-        return fmt, [_single_page(_rasterize_svg(content))]
+        return fmt, [_single_page(_rasterize_svg(content, dpi=dpi))]
     if fmt in {"tif", "tiff"}:
         return "tiff", _rasterize_tiff(content, selected_pages=selected_pages)
     if fmt in {"excalidraw", "excalidraw-md"}:
@@ -245,12 +246,16 @@ def _rasterize_tiff(content: bytes, selected_pages: set[int] | None) -> list[Ras
     return pages
 
 
-def _rasterize_svg(content: bytes) -> Image.Image:
+def _rasterize_svg(content: bytes, dpi: int = 180) -> Image.Image:
     errors = []
     raster_content = _prepare_svg_for_rasterization(content)
+    # Draw.io SVGs are usually exported at a small CSS-pixel canvas size. Keep
+    # the vector source but rasterize these files at a higher scale so thin
+    # lines and Japanese glyphs remain readable in the diff viewer.
+    scale = _drawio_raster_scale(content, dpi=dpi) if _looks_like_drawio_svg(content) else 1.0
     try:
         import cairosvg
-        png = cairosvg.svg2png(bytestring=raster_content, background_color="white")
+        png = cairosvg.svg2png(bytestring=raster_content, background_color="white", scale=scale)
         return _load_pil_image(png, "SVG")
     except Exception as exc:
         errors.append(f"CairoSVG: {exc}")
@@ -262,7 +267,7 @@ def _rasterize_svg(content: bytes) -> Image.Image:
             if len(doc) < 1:
                 raise ConversionError("SVG has no pages")
             page = doc[0]
-            pix = page.get_pixmap(alpha=True)
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=True)
             _validate_raster_dimensions(pix.width, pix.height, "SVG")
             mode = "RGBA" if pix.alpha else "RGB"
             image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
@@ -281,9 +286,6 @@ def _prepare_svg_for_rasterization(content: bytes) -> bytes:
     support the HTML branch and can therefore render a label as blank. Removing
     that branch lets the portable SVG fallback be selected.
     """
-    if b"foreignObject" not in content:
-        return content
-
     try:
         root = ET.fromstring(content)
     except ET.ParseError:
@@ -311,9 +313,57 @@ def _prepare_svg_for_rasterization(content: bytes) -> bytes:
                     parent.remove(child)
                     changed = True
 
+    if _normalize_svg_text_glyphs(root):
+        changed = True
+
     if not changed:
         return content
     return ET.tostring(root, encoding="utf-8")
+
+
+def _looks_like_drawio_svg(content: bytes) -> bool:
+    return b"foreignObject" in content or b"drawio" in content.lower() or b"mxfile" in content.lower()
+
+
+def _drawio_raster_scale(content: bytes, dpi: int = 180) -> float:
+    scale = min(SVG_DRAWIO_RASTER_SCALE, max(1.0, float(dpi) / 72.0))
+    try:
+        root = ET.fromstring(content)
+        width = _css_pixels(root.attrib.get("width"), 0.0)
+        height = _css_pixels(root.attrib.get("height"), 0.0)
+        if (width <= 0 or height <= 0) and root.attrib.get("viewBox"):
+            parts = root.attrib["viewBox"].replace(",", " ").split()
+            if len(parts) == 4:
+                width, height = float(parts[2]), float(parts[3])
+        source_pixels = width * height
+        if source_pixels > 0:
+            scale = min(scale, math.sqrt(MAX_RASTER_PIXELS / source_pixels))
+    except (ET.ParseError, TypeError, ValueError, ZeroDivisionError):
+        pass
+    return max(1.0, scale)
+
+
+def _normalize_svg_text_glyphs(root: ET.Element) -> bool:
+    """Work around MuPDF's missing-glyph handling for Japanese prolonged marks.
+
+    MuPDF's SVG text renderer silently drops U+30FC (for example, rendering
+    ``メール`` as ``メル``). U+2212 has the same visible horizontal mark and is
+    rendered reliably by the installed CJK fallback fonts. Keep the original
+    text in an attribute for diagnostics while using the compatible glyph for
+    rasterization.
+    """
+    changed = False
+    for element in root.iter():
+        if _svg_local_name(element.tag).lower() not in {"text", "tspan"} or not element.text:
+            continue
+        normalized = element.text.replace("ー", "−").replace("ｰ", "−")
+        if normalized == element.text:
+            continue
+        if "data-original-text" not in element.attrib:
+            element.set("data-original-text", element.text)
+        element.text = normalized
+        changed = True
+    return changed
 
 
 def _svg_local_name(tag: str) -> str:

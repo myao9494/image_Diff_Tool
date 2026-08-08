@@ -8,6 +8,7 @@ import subprocess
 import webbrowser
 from pathlib import Path
 from urllib.parse import quote, unquote
+from uuid import uuid4
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -76,6 +77,7 @@ WIKI_LINK_RE = re.compile(r"!?\[\[([^\]]+)\]\]")
 MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 SERVER_SETTINGS_PATH = Path(os.environ.get("VISUAL_DIFF_SETTINGS_PATH", Path(__file__).resolve().parents[1] / ".visual-diff-settings.json"))
 MAX_OBSIDIAN_LINKS = 500
+MAX_REPORT_BYTES = 50 * 1024 * 1024
 
 
 @app.get("/api/health")
@@ -240,25 +242,66 @@ async def get_diff_result(result_id: str, diff_threshold: float = 0.1) -> DiffRe
 @app.get("/api/settings/obsidian")
 def get_obsidian_settings() -> JSONResponse:
     settings = _load_server_settings()
-    return JSONResponse({"obsidian_folder": settings.get("obsidian_folder", "")})
+    return JSONResponse(
+        {
+            "obsidian_folder": settings.get("obsidian_folder", ""),
+            "obsidian_report_folder": settings.get("obsidian_report_folder", ""),
+        }
+    )
 
 
 @app.put("/api/settings/obsidian")
 def update_obsidian_settings(payload: dict) -> JSONResponse:
-    raw_folder = str(payload.get("obsidian_folder") or "").strip()
-    if raw_folder:
-        folder = Path(raw_folder).expanduser()
-        try:
-            folder = folder.resolve(strict=True)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=422, detail="Obsidianフォルダーが見つかりません") from exc
-        if not folder.is_dir():
-            raise HTTPException(status_code=422, detail="Obsidianフォルダーはディレクトリを指定してください")
-        raw_folder = str(folder)
     settings = _load_server_settings()
+    raw_folder = (
+        _validated_directory_setting(payload.get("obsidian_folder"), "Obsidianフォルダー")
+        if "obsidian_folder" in payload
+        else str(settings.get("obsidian_folder") or "")
+    )
+    raw_report_folder = (
+        _validated_directory_setting(payload.get("obsidian_report_folder"), "Obsidianレポート保存先")
+        if "obsidian_report_folder" in payload
+        else str(settings.get("obsidian_report_folder") or "")
+    )
     settings["obsidian_folder"] = raw_folder
+    settings["obsidian_report_folder"] = raw_report_folder
     _save_server_settings(settings)
-    return JSONResponse({"obsidian_folder": raw_folder})
+    return JSONResponse({"obsidian_folder": raw_folder, "obsidian_report_folder": raw_report_folder})
+
+
+@app.post("/api/reports/save")
+def save_report(payload: dict) -> JSONResponse:
+    html = str(payload.get("html") or "")
+    if not html:
+        raise HTTPException(status_code=422, detail="html is required")
+    if len(html.encode("utf-8")) > MAX_REPORT_BYTES:
+        raise HTTPException(status_code=413, detail="HTML report is too large")
+
+    settings = _load_server_settings()
+    # The destination is an administrator/user configured server setting. Do not
+    # accept a per-request override, otherwise any page able to call the local API
+    # could write a report into an arbitrary existing directory.
+    raw_folder = str(settings.get("obsidian_report_folder") or "").strip()
+    if not raw_folder:
+        raise HTTPException(status_code=422, detail="Obsidianレポート保存先が未設定です")
+    folder = _validated_directory_setting(raw_folder, "Obsidianレポート保存先", required=True)
+    filename = Path(str(payload.get("filename") or "差分レポート.html")).name.strip()
+    if not filename:
+        filename = "差分レポート.html"
+    if not filename.lower().endswith(".html"):
+        filename = f"{filename}.html"
+    destination = Path(folder) / filename
+    temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(html, encoding="utf-8")
+        temporary.replace(destination)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail="HTMLレポートを保存できませんでした") from exc
+    return JSONResponse({"filename": filename, "path": str(destination), "size": len(html.encode("utf-8"))})
 
 
 @app.post("/api/git/images")
@@ -602,6 +645,22 @@ def _payload_git_scope(payload: dict) -> tuple[Path, str | None]:
     if folder.is_file() and folder.suffix.lower() == ".md":
         return folder.parent, str(folder)
     raise HTTPException(status_code=422, detail="folder must be a directory or a Markdown file")
+
+
+def _validated_directory_setting(value: object, label: str, *, required: bool = False) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        if required:
+            raise HTTPException(status_code=422, detail=f"{label}が未設定です")
+        return ""
+    folder = Path(raw_value).expanduser()
+    try:
+        folder = folder.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=422, detail=f"{label}が見つかりません") from exc
+    if not folder.is_dir():
+        raise HTTPException(status_code=422, detail=f"{label}はディレクトリを指定してください")
+    return str(folder)
 
 
 def _load_server_settings() -> dict:

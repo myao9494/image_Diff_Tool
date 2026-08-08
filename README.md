@@ -11,12 +11,12 @@ The first implementation focuses on the web app and local Backend API. VSCode ex
 - Select pages independently for multi-page PDF/TIFF inputs.
 - Compare changed image and text files in a local Git working tree, including additions, deletions, untracked files, and staged renames where the HEAD-side path differs.
 - Show text changes in a VS Code-style side-by-side view with line numbers, strongly colored added/deleted rows, visible empty-side gaps, and inline character highlighting. Text extensions are configurable from the hamburger menu and saved locally in the browser.
-- Add image annotations or per-file text memos from the Git tab, choose whether each changed file is included, then export the selected changes as one static, self-contained HTML report. Images, annotations, and CSS are embedded; the report does not load scripts, fonts, or any other external resources.
+- Add image annotations or per-file text memos from the Git tab, choose whether each changed file is included, then export the selected changes as one static, self-contained HTML report. Images, annotations, CSS, and the small content-zoom script are embedded; the report does not load external scripts, fonts, or any other network resources.
 - Align image B to image A with staged OpenCV feature matching and ECC refinement.
 - Switch between aligned B, diff overlay, and mask views.
 - Adjust the diff threshold after comparison without rerunning alignment.
 - Preserve thin drawing-line changes in the diff mask while filtering isolated single-pixel noise.
-- Open a separate diff memo tab after comparison. The memo view uses a draggable A/B comparison slider, lets users place independent text notes on the image, and can copy image A or B with those notes rendered into the clipboard from the right-click menu.
+- Open a separate diff memo tab after comparison. It provides an A/B slider, draggable color-coded memos and leader lines, change clouds, rectangles, ellipses, thin markers, and independent yellow sticky notes. The memo list is resizable/collapsible and navigates to a selected memo. Annotated A, B, or side-by-side images can be copied from the right-click menu.
 - Excalidraw conversion is a lightweight built-in renderer. It handles basic shapes and text, and returns warnings for approximated or unsupported features such as embedded images, rotation, arrow heads, text styling, and opacity.
 - Draw.io SVG conversion replaces its browser-only `foreignObject` labels with portable SVG text, preserving full label text and explicit line breaks before rasterization.
 
@@ -55,8 +55,12 @@ http://127.0.0.1:8078/
 - `POST /api/rediff`
 - `POST /api/git/images`
 - `POST /api/git/files`
+- `POST /api/git/markdown` / `GET /api/git/markdown?path=...`
 - `POST /api/git/item`
 - `POST /api/git/diff`
+- `GET /api/settings/obsidian`
+- `PUT /api/settings/obsidian`
+- `POST /api/reports/save`
 
 `/api/diff` normally returns a bounded in-memory `result_id` in addition to the encoded result images. The UI uses that ID with `/api/rediff` when only the diff threshold changes, so threshold tuning reuses the aligned images instead of converting and aligning the files again. Extremely large pairs that cannot fit in the cache return `null` for this optional field.
 
@@ -70,7 +74,7 @@ http://127.0.0.1:8078/
 - Git text responses omit unused full-file copies in the web UI, and HTML export reuses the currently loaded comparison instead of calculating it twice.
 - Feature matching stops early when a detector produces a high-confidence transform; harder cases still fall through to the remaining detectors.
 - Feature detection is downscaled for very large images and the estimated transform is mapped back to full-resolution coordinates before warping.
-- The diff memo tab keeps the selected compared images in IndexedDB, with a localStorage fallback for older browsers, so it can open independently from the main comparison screen while avoiding the small localStorage quota for normal use. The notes are UI annotations only and are not part of the image-diff calculation or Backend API data model.
+- The diff memo tab keeps the compared images, memos, drawings, sticky notes, and layout geometry in IndexedDB, with a localStorage fallback for older browsers. Stored geometry uses layout dimensions so app-level display scaling does not shift exported annotations. These are UI annotations only and are not part of the image-diff calculation or Backend API data model.
 
 ## Frontend Distribution
 

@@ -130,19 +130,19 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertEqual(page.image.size, (120, 80))
 
     def test_drawio_svg_converts_html_text_and_preserves_line_breaks(self):
-        svg = b'''<?xml version="1.0" encoding="UTF-8"?>
+        svg = '''<?xml version="1.0" encoding="UTF-8"?>
         <svg xmlns="http://www.w3.org/2000/svg" width="120" height="80">
           <g transform="translate(20,20)">
             <switch>
               <foreignObject width="80" height="20">
                 <div xmlns="http://www.w3.org/1999/xhtml" style="padding-top: 20px; margin-left: 0px; width: 80px; justify-content: center;">
-                  <div style="font-size: 12px; color: light-dark(#000000, #ffffff)">HTML label<div>second line</div></div>
+                  <div style="font-size: 12px; color: light-dark(#000000, #ffffff)">HTML label メール<div>second line</div></div>
                 </div>
               </foreignObject>
               <text x="0" y="16">SVG label...</text>
             </switch>
           </g>
-        </svg>'''
+        </svg>'''.encode()
 
         prepared = _prepare_svg_for_rasterization(svg)
 
@@ -150,7 +150,13 @@ class TestBackendPipeline(unittest.TestCase):
         self.assertNotIn(b"SVG label...", prepared)
         self.assertIn(b"HTML label", prepared)
         self.assertIn(b"second line", prepared)
+        self.assertIn("メール".encode(), prepared)
+        self.assertIn("メ−ル".encode(), prepared)
         self.assertNotIn(b"light-dark(", prepared)
+
+        fmt, page = rasterize_upload_page("drawio.svg", svg)
+        self.assertEqual(fmt, "svg")
+        self.assertEqual(page.image.size, (300, 200))
 
     def test_lz_string_base64_decompression_matches_obsidian_excalidraw_format(self):
         self.assertEqual(_decompress_lz_string_base64("BIUwNmD2AEDukCcwBMCEQ==="), "Hello world!")
@@ -582,12 +588,51 @@ class TestBackendPipeline(unittest.TestCase):
 
     def test_obsidian_settings_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
+            requested_override = Path(tmp) / "request-override"
+            requested_override.mkdir()
             with patch("backend.app.main.SERVER_SETTINGS_PATH", Path(tmp) / "settings.json"):
-                put_response = self.client.put("/api/settings/obsidian", json={"obsidian_folder": tmp})
+                put_response = self.client.put(
+                    "/api/settings/obsidian",
+                    json={"obsidian_folder": tmp, "obsidian_report_folder": tmp},
+                )
+                partial_response = self.client.put(
+                    "/api/settings/obsidian",
+                    json={"obsidian_folder": tmp},
+                )
                 get_response = self.client.get("/api/settings/obsidian")
+                save_response = self.client.post(
+                    "/api/reports/save",
+                    json={
+                        "filename": "../note_変更差分レポート.html",
+                        "html": "<!doctype html><p>diff</p>",
+                        "report_folder": str(requested_override),
+                    },
+                )
             self.assertEqual(put_response.status_code, 200, put_response.text)
+            self.assertEqual(partial_response.status_code, 200, partial_response.text)
             self.assertEqual(get_response.status_code, 200, get_response.text)
             self.assertEqual(get_response.json()["obsidian_folder"], str(Path(tmp).resolve()))
+            self.assertEqual(get_response.json()["obsidian_report_folder"], str(Path(tmp).resolve()))
+            self.assertEqual(save_response.status_code, 200, save_response.text)
+            saved_path = Path(save_response.json()["path"])
+            self.assertEqual(saved_path.parent, Path(tmp).resolve())
+            self.assertEqual(saved_path.name, "note_変更差分レポート.html")
+            self.assertFalse((requested_override / saved_path.name).exists())
+            self.assertTrue(saved_path.read_text(encoding="utf-8").endswith("diff</p>"))
+
+    def test_report_save_requires_server_configured_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("backend.app.main.SERVER_SETTINGS_PATH", Path(tmp) / "missing-settings.json"):
+                response = self.client.post(
+                    "/api/reports/save",
+                    json={
+                        "filename": "report.html",
+                        "html": "<!doctype html><p>diff</p>",
+                        "report_folder": tmp,
+                    },
+                )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("未設定", response.json()["detail"])
 
     def test_git_treats_excalidraw_markdown_as_image(self):
         with tempfile.TemporaryDirectory() as tmp:
