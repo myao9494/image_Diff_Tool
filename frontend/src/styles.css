@@ -1929,7 +1929,7 @@ select {
 .memo-note {
   position: absolute;
   z-index: 2;
-  min-height: 56px;
+  min-height: 42px;
   padding: 0;
   cursor: grab;
   display: flex;
@@ -1998,7 +1998,7 @@ select {
   resize: none;
   border: 2px solid transparent;
   border-radius: 8px;
-  padding: 9px 12px;
+  padding: 6px 8px;
   background: var(--memo-fill, #ff1d14);
   background: color-mix(in srgb, var(--memo-fill, #ff1d14) calc(var(--memo-alpha, 1) * 100%), transparent);
   color: #ffffff;

@@ -78,8 +78,8 @@ const MEMO_DEFAULTS = {
   changeType: "change",
   opacity: 60,
   fontSize: 15,
-  width: 180,
-  height: 52,
+  width: 100,
+  height: 42,
   autoSize: true,
   leaderX: 18,
   leaderY: 46,
@@ -238,6 +238,7 @@ function App() {
   const previewRequestIdRef = useRef({ left: 0, right: 0 });
   const canvasRefs = useRef({ left: null, right: null });
   const syncingCanvasScrollRef = useRef(false);
+  const reportPreviewRestoreRef = useRef(false);
 
   useEffect(() => {
     if (!reportPreview) return undefined;
@@ -494,6 +495,19 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (
+      !window.location.hash.startsWith("#report-preview")
+      || reportPreview
+      || reportPreviewRestoreRef.current
+      || !gitInfo
+      || gitBusy
+      || exportBusy
+    ) return;
+    reportPreviewRestoreRef.current = true;
+    exportGitHtml();
+  }, [gitInfo, gitBusy, exportBusy, reportPreview]);
+
+  useEffect(() => {
     persistLocalStorage(GIT_FOLDER_HISTORY_STORAGE_KEY, gitFolderHistory);
   }, [gitFolderHistory]);
 
@@ -701,6 +715,7 @@ function App() {
         onChange={setReportPreview}
         onRevertLine={revertPreviewLine}
         onExport={() => finalizeGitHtml(reportPreview)}
+        error={gitError}
       />
     );
   }
@@ -1262,7 +1277,10 @@ function App() {
   }
 
   async function finalizeGitHtml(entries) {
-    if (!gitInfo || !entries.length) return;
+    if (!gitInfo || !entries.length) {
+      setGitError("HTML出力に必要な情報がありません。プレビューを閉じて、もう一度開いてください。");
+      return;
+    }
     setExportBusy(true);
     setExportNotice("");
     setGitError("");
@@ -1822,7 +1840,7 @@ function ExportSelectionModal({ files, excludedPaths, busy, onToggle, onIncludeA
   );
 }
 
-function ReportPreviewPage({ entries, busy, onClose, onChange, onRevertLine, onExport }) {
+function ReportPreviewPage({ entries, busy, onClose, onChange, onRevertLine, onExport, error }) {
   const [helpOpen, setHelpOpen] = useShortcutHelp();
   const [dragIndex, setDragIndex] = useState(null);
 
@@ -1844,6 +1862,7 @@ function ReportPreviewPage({ entries, busy, onClose, onChange, onRevertLine, onE
         <div><h1 id="report-preview-title">HTML出力プレビュー</h1><p>カードサイズ、画像の位置・倍率・出力領域、カード順を調整してから出力します。</p></div>
         <div><button type="button" onClick={() => setHelpOpen(true)}><HelpCircle size={17} />ヘルプ</button><button type="button" disabled={busy} onClick={onClose}>閉じる</button><button type="button" className="primary" disabled={busy} onClick={onExport}>{busy ? "処理中…" : "HTMLを出力"}</button></div>
       </header>
+      {error && <div className="notice error report-preview-notice"><AlertTriangle size={18} />{error}</div>}
       <section className="report-preview-content">
         {entries.map((entry, index) => {
           const previewImage = entry.data.image_b_aligned ?? entry.data.image_current ?? entry.data.image_a ?? entry.data.image_head;
@@ -2076,7 +2095,11 @@ function ReportImageViewport({ src, view, crop, alt, onViewChange, onCropChange,
     event.stopPropagation();
     if (event.ctrlKey || event.metaKey || event.altKey) {
       const direction = event.deltaY < 0 ? 1 : -1;
-      onViewChange({ ...safeView, zoom: clamp(safeView.zoom + direction * 5, 100, 500) });
+      const nextZoom = clamp(safeView.zoom + direction * 5, 100, 500);
+      const nextImageScale = Number.isFinite(safeView.imageScale)
+        ? safeView.imageScale * (nextZoom / safeView.zoom)
+        : null;
+      onViewChange({ ...safeView, zoom: nextZoom, imageScale: nextImageScale });
       return;
     }
     onViewChange({
@@ -2094,6 +2117,7 @@ function ReportImageViewport({ src, view, crop, alt, onViewChange, onCropChange,
       y: event.clientY,
       width: safeView.cardWidth,
       height: safeView.cardHeight,
+      imageScale: geometry && imageSize ? geometry.width / imageSize.width : null,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
@@ -2105,6 +2129,7 @@ function ReportImageViewport({ src, view, crop, alt, onViewChange, onCropChange,
       ...safeView,
       cardWidth: clamp(Math.round(resize.width + event.clientX - resize.x), 420, 1180),
       cardHeight: clamp(Math.round(resize.height + event.clientY - resize.y), 220, 720),
+      imageScale: resize.imageScale ?? safeView.imageScale,
     });
   }
 
@@ -2142,7 +2167,7 @@ function ReportImageViewport({ src, view, crop, alt, onViewChange, onCropChange,
           <span>カード {safeView.cardWidth} × {safeView.cardHeight}px</span>
         </div>
       </div>
-      <p className="report-crop-hint">ドラッグまたは2本指スワイプで画像を移動、ピンチで拡大縮小します。右下ハンドルでカードをリサイズできます。</p>
+      <p className="report-crop-hint">ドラッグまたは2本指スワイプで画像を移動、ピンチで拡大縮小します。右下ハンドルでカードを広げると、画像倍率を保ったまま表示範囲だけ広がります。</p>
       <div
         ref={stageRef}
         className={`report-crop-stage report-pan-stage ${selecting ? "selecting" : ""}`}
@@ -2268,6 +2293,7 @@ function MemoDiffApp() {
   const [memoSidebarVisible, setMemoSidebarVisible] = useState(loadMemoSidebarVisible);
   const [slider, setSlider] = useState(50);
   const [memoZoom, setMemoZoom] = useState(100);
+  const [memoImageScale, setMemoImageScale] = useState(100);
   const [notes, setNotes] = useState([]);
   const [stickies, setStickies] = useState([]);
   const [selectedNoteId, setSelectedNoteId] = useState(null);
@@ -2295,7 +2321,7 @@ function MemoDiffApp() {
   const memoHistoryRestoringRef = useRef(false);
   const stagePointerRef = useRef({ clientX: 0, clientY: 0, inside: false });
   const memoNavigationBusyRef = useRef(false);
-  const memoStateRef = useRef({ payload: null, notes: [], stickies: [], memoZoom: 100 });
+  const memoStateRef = useRef({ payload: null, notes: [], stickies: [], memoZoom: 100, memoImageScale: 100 });
   const safeNotes = useMemo(() => normalizeMemoNotes(notes), [notes]);
   const safeStickies = useMemo(() => normalizeStickyNotes(stickies), [stickies]);
   const selectedNote = useMemo(
@@ -2306,7 +2332,7 @@ function MemoDiffApp() {
     () => selectedNote?.annotations.find((annotation) => annotation.id === selectedAnnotationId) ?? null,
     [selectedNote, selectedAnnotationId],
   );
-  memoStateRef.current = { payload, notes, stickies, memoZoom };
+  memoStateRef.current = { payload, notes, stickies, memoZoom, memoImageScale };
 
   async function persistCurrentMemoState() {
     const current = memoStateRef.current;
@@ -2320,9 +2346,10 @@ function MemoDiffApp() {
       stickies: normalizeStickyNotes(current.stickies),
       reportOptions: latestStored?.reportOptions ?? current.payload.reportOptions ?? null,
       memoZoom: current.memoZoom,
+      memoImageScale: current.memoImageScale,
       memoGeometryVersion: 2,
       stageSize: stageRef.current
-        ? canonicalMemoStageSize(stageRef.current, current.memoZoom)
+        ? canonicalMemoStageSize(stageRef.current, current.memoZoom, current.memoImageScale)
         : current.payload.stageSize ?? null,
     });
   }
@@ -2335,6 +2362,7 @@ function MemoDiffApp() {
       setNotes(normalizeMemoNotes(nextPayload?.notes));
       setStickies(normalizeStickyNotes(nextPayload?.stickies));
       setMemoZoom(clamp(Number(nextPayload?.memoZoom) || 100, 10, 300));
+      setMemoImageScale(clamp(Number(nextPayload?.memoImageScale) || 100, 25, 150));
       setLoadingPayload(false);
     });
     return () => {
@@ -2390,7 +2418,7 @@ function MemoDiffApp() {
       persistCurrentMemoState().catch(() => setNotice("メモをブラウザに保存できませんでした"));
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [payload, notes, stickies, memoZoom]);
+  }, [payload, notes, stickies, memoZoom, memoImageScale]);
 
   useEffect(() => {
     if (loadingPayload) return;
@@ -2732,6 +2760,7 @@ function MemoDiffApp() {
         stickies: normalizeStickyNotes(existing?.stickies),
         stageSize: existing?.stageSize ?? null,
         memoZoom: clamp(Number(existing?.memoZoom) || current.memoZoom || 100, 10, 300),
+        memoImageScale: clamp(Number(existing?.memoImageScale) || current.memoImageScale || 100, 25, 150),
         memoGeometryVersion: existing?.memoGeometryVersion ?? null,
         reportOptions: existing?.reportOptions ?? null,
         memoNavigation: { ...navigation, index: nextIndex },
@@ -2742,6 +2771,7 @@ function MemoDiffApp() {
       setNotes(nextPayload.notes);
       setStickies(nextPayload.stickies);
       setMemoZoom(nextPayload.memoZoom);
+      setMemoImageScale(nextPayload.memoImageScale);
       setSlider(50);
       setSelectedNoteId(null);
       setSelectedAnnotationId(null);
@@ -3187,6 +3217,7 @@ function MemoDiffApp() {
     const wrap = stageWrapRef.current;
     if (!image?.naturalWidth || !image?.naturalHeight || !wrap) {
       setMemoZoom(100);
+      setMemoImageScale(100);
       return;
     }
     const styles = window.getComputedStyle(wrap);
@@ -3197,6 +3228,7 @@ function MemoDiffApp() {
     const baseWidth = availableWidth;
     const baseHeight = baseWidth * (image.naturalHeight / image.naturalWidth);
     const fitPercent = Math.min(100, (availableHeight / baseHeight) * 100);
+    setMemoImageScale(100);
     setMemoZoom(Math.round(clamp(fitPercent, 10, 100)));
     window.requestAnimationFrame(() => {
       if (stageWrapRef.current) {
@@ -3225,7 +3257,12 @@ function MemoDiffApp() {
   function getMemoStageSize() {
     const stage = stageRef.current;
     if (!stage) return null;
-    return canonicalMemoStageSize(stage, memoZoom);
+    const baseSize = canonicalMemoStageSize(stage, memoZoom, memoImageScale);
+    const imageScale = clamp(Number(memoImageScale) || 100, 25, 150) / 100;
+    return {
+      width: baseSize.width * imageScale,
+      height: baseSize.height * imageScale,
+    };
   }
 
   return (
@@ -3252,8 +3289,20 @@ function MemoDiffApp() {
             <input type="range" min="0" max="100" value={slider} onChange={(event) => setSlider(Number(event.target.value))} />
           </label>
           <label className="control slider-control">
-            <span>表示サイズ {memoZoom}%</span>
+            <span>表示倍率 {memoZoom}%</span>
             <input type="range" min="10" max="300" value={memoZoom} onChange={(event) => setMemoZoom(Number(event.target.value))} />
+          </label>
+          <label className="control slider-control" title="画像の表示幅だけを調整します。元画像の解像度や保存データは変わりません">
+            <span>画像サイズ {memoImageScale}%</span>
+            <input
+              type="range"
+              min="25"
+              max="150"
+              step="5"
+              value={memoImageScale}
+              aria-label="画像の表示サイズ"
+              onChange={(event) => setMemoImageScale(Number(event.target.value))}
+            />
           </label>
           <button type="button" className="memo-fit-button" onClick={fitMemoToViewport}>
             画面に合わせる
@@ -3507,7 +3556,10 @@ function MemoDiffApp() {
           onPointerMove={trackStagePointer}
           onPointerEnter={trackStagePointer}
           onPointerLeave={() => { stagePointerRef.current.inside = false; }}
-          style={{ width: `${memoZoom}%`, "--memo-content-scale": memoZoom / 100 }}
+          style={{
+            width: `${(memoZoom * memoImageScale) / 100}%`,
+            "--memo-content-scale": memoZoom / 100,
+          }}
         >
           <img className="memo-image memo-image-a" ref={imageARef} src={imageA} alt="画像A（旧）" draggable="false" />
           <div className="memo-image-b-clip" style={{ clipPath: `inset(0 0 0 ${slider}%)` }}>
@@ -4067,6 +4119,7 @@ async function openDiffMemoTab(result, left, right, onError, fixedId = null, ext
     stickies: existing?.stickies ?? [],
     stageSize: existing?.stageSize ?? null,
     memoZoom: existing?.memoZoom ?? 100,
+    memoImageScale: existing?.memoImageScale ?? 100,
     memoGeometryVersion: existing?.memoGeometryVersion ?? null,
     reportOptions: existing?.reportOptions ?? null,
     ...extraPayload,
@@ -4373,11 +4426,12 @@ function normalizeReportOptions(options) {
   };
 }
 
-function canonicalMemoStageSize(stage, memoZoom) {
-  const scale = clamp(Number(memoZoom) || 100, 10, 300) / 100;
+function canonicalMemoStageSize(stage, memoZoom, memoImageScale = 100) {
+  const zoomScale = clamp(Number(memoZoom) || 100, 10, 300) / 100;
+  const imageScale = clamp(Number(memoImageScale) || 100, 25, 150) / 100;
   return {
-    width: Math.max(1, stage.offsetWidth / scale),
-    height: Math.max(1, stage.offsetHeight / scale),
+    width: Math.max(1, stage.offsetWidth / zoomScale / imageScale),
+    height: Math.max(1, stage.offsetHeight / zoomScale / imageScale),
   };
 }
 
@@ -4385,7 +4439,10 @@ function effectiveMemoStageSize(imageMemo) {
   const width = Number(imageMemo?.stageSize?.width);
   const height = Number(imageMemo?.stageSize?.height);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
-  if (Number(imageMemo?.memoGeometryVersion) >= 2) return { width, height };
+  if (Number(imageMemo?.memoGeometryVersion) >= 2) {
+    const imageScale = clamp(Number(imageMemo?.memoImageScale) || 100, 25, 150) / 100;
+    return { width: width * imageScale, height: height * imageScale };
+  }
   // Older payloads stored the already-zoomed stage. Values produced at very
   // small/large editor zooms make exported labels explode or shrink. Only
   // retain legacy dimensions that are plausibly a 100% editing stage.
@@ -4395,12 +4452,14 @@ function effectiveMemoStageSize(imageMemo) {
 
 function normalizeReportView(view, note = null, stageSize = null) {
   const fallback = defaultMemoReportView(note, stageSize);
+  const imageScale = Number(view?.imageScale);
   return {
     centerX: clamp(Number(view?.centerX ?? fallback.centerX), 0, 100),
     centerY: clamp(Number(view?.centerY ?? fallback.centerY), 0, 100),
     zoom: clamp(Number(view?.zoom ?? fallback.zoom), 100, 500),
     cardWidth: clamp(Math.round(Number(view?.cardWidth ?? fallback.cardWidth)), 420, 1180),
     cardHeight: clamp(Math.round(Number(view?.cardHeight ?? fallback.cardHeight)), 220, 720),
+    imageScale: Number.isFinite(imageScale) && imageScale > 0 ? clamp(imageScale, 0.01, 20) : null,
   };
 }
 
@@ -4420,7 +4479,9 @@ function defaultMemoReportView(note, stageSize = null) {
 
 function reportViewportGeometry(imageSize, viewportSize, view) {
   if (!imageSize?.width || !imageSize?.height || !viewportSize?.width || !viewportSize?.height) return null;
-  const scale = Math.min(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height) * (view.zoom / 100);
+  const scale = Number.isFinite(view.imageScale) && view.imageScale > 0
+    ? view.imageScale
+    : Math.min(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height) * (view.zoom / 100);
   const width = imageSize.width * scale;
   const height = imageSize.height * scale;
   const minCenterX = width > viewportSize.width ? (viewportSize.width / (2 * width)) * 100 : 50;
@@ -4870,10 +4931,10 @@ function snapMemoLeaderPoint(point, size) {
 function calculateMemoAutoSize(note) {
   const lines = String(note.text || MEMO_DEFAULTS.text).split("\n");
   const longestLine = Math.max(...lines.map((line) => Array.from(line || " ").length), 1);
-  const width = clamp(Math.round(longestLine * note.fontSize * 0.72 + 34), 120, 420);
+  const width = clamp(Math.round(longestLine * note.fontSize * 0.72 + 24), 100, 420);
   const usableChars = Math.max(1, Math.floor((width - 28) / (note.fontSize * 0.72)));
   const lineCount = lines.reduce((total, line) => total + Math.max(1, Math.ceil(Array.from(line || " ").length / usableChars)), 0);
-  const height = clamp(Math.round(lineCount * note.fontSize * 1.18 + 24), 44, 260);
+  const height = clamp(Math.round(lineCount * note.fontSize * 1.18 + 16), 42, 260);
   return { width, height };
 }
 
