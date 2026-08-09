@@ -9,6 +9,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
+  ArrowUpRight,
   BookOpenText,
   ChevronDown,
   ChevronLeft,
@@ -19,6 +20,8 @@ import {
   FileText,
   FolderGit2,
   FolderOpen,
+  GripVertical,
+  HelpCircle,
   ImageUp,
   Layers,
   Loader2,
@@ -27,6 +30,7 @@ import {
   MousePointer2,
   PanelTopOpen,
   RefreshCw,
+  RotateCcw,
   ScanSearch,
   X,
   ZoomIn,
@@ -62,10 +66,11 @@ const MEMO_CHANGE_TYPES = [
   { id: "decision", label: "要判断" },
 ];
 const MEMO_ANNOTATION_TYPES = [
+  { id: "arrow", label: "矢印", shortcut: "A" },
   { id: "cloud", label: "変更雲", shortcut: "C" },
   { id: "rectangle", label: "矩形", shortcut: "R" },
   { id: "ellipse", label: "楕円", shortcut: "O" },
-  { id: "highlight", label: "マーカー", shortcut: "H" },
+  { id: "highlight", label: "マーカー", shortcut: "M" },
 ];
 const MEMO_DEFAULTS = {
   text: "めも",
@@ -104,7 +109,87 @@ const MEMO_COLORS = [
   { fill: "#0891b2", border: "#a5f3fc", line: "#06b6d4", hex: "#06b6d4" },
 ];
 
+function useShortcutHelp() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const showHelp = (event) => {
+      if (isTypingTarget(event.target) || event.key.toLowerCase() !== "h") return;
+      event.preventDefault();
+      setOpen(true);
+    };
+    window.addEventListener("keydown", showHelp);
+    return () => window.removeEventListener("keydown", showHelp);
+  }, []);
+  return [open, setOpen];
+}
+
+function ShortcutHelp({ page, onClose }) {
+  const content = page === "memo" ? {
+    title: "画像メモのショートカット",
+    shortcuts: [
+      ["T", "メモを追加"], ["L", "選択メモへラインを追加"], ["N", "付箋を追加"],
+      ["A", "ドラッグした起点から終点へ矢印を追加"], ["C", "変更雲"], ["R / 2", "矩形"],
+      ["O / 4", "楕円"], ["M", "マーカー"], ["Ctrl/Cmd+Z", "元に戻す"],
+      ["Ctrl/Cmd+Shift+Z", "やり直す"], ["Delete", "選択中の図形を削除"],
+      ["H", "このヘルプ"], ["Esc", "テキスト編集を終了"],
+    ],
+    settings: [
+      "メモ本文: 通常クリックは選択・移動、ダブルクリックは文字編集です。Escまたは図形選択で編集を終了します。",
+      "図形: クリックで水色の選択枠を表示します。選択後はDelete／Backspaceで削除できます。",
+      "Git対象拡張子: git差分でテキストとして扱う形式を設定します。画像形式は常に対象です。",
+      "Obsidianフォルダー: Markdownリンクの解決元です。",
+      "レポート保存先: 出力HTMLをサーバー側で保存するフォルダーです。",
+      "表示倍率: アプリ全体のUI倍率です。画像メモの表示サイズとは別です。",
+    ],
+  } : page === "git" ? {
+    title: "git差分のショートカット",
+    shortcuts: [["← / →", "前後の変更ファイルへ移動"], ["Tab / Shift+Tab", "補正Bと差分表示を切替（画像）"], ["H", "このヘルプ"]],
+    settings: [
+      "Git対象拡張子: 一覧・HTMLレポートに含めるテキスト形式を設定します。",
+      "Obsidianフォルダー: Markdownから関連ファイルをたどる基準です。",
+      "レポート保存先: プレビュー調整後のHTML保存先です。未設定時はダウンロードします。",
+      "表示倍率: git差分画面全体を50〜200%で表示します。",
+    ],
+  } : page === "report" ? {
+    title: "HTML出力プレビューの操作",
+    shortcuts: [["H", "このヘルプ"]],
+    settings: [
+      "カード見出しをドラッグするか、↑／↓ボタンで出力順を変更します。",
+      "画像はドラッグ／2本指スワイプで移動し、ピンチで拡大・縮小します。右下ハンドルでカードをリサイズできます。",
+      "領域指定ボタンで出力範囲を選びます。未指定の場合は現在表示中の範囲を出力します。",
+      "テキスト差分の戻すボタンは作業ファイルを1行だけ変更前へ戻します。ファイルがプレビュー後に変わった場合は安全のため拒否します。",
+      "メモ編集で詳細を直した後は、HTML出力プレビューへ戻るボタンでこの画面へ戻れます。",
+    ],
+  } : page === "api" ? {
+    title: "API説明ページのショートカット",
+    shortcuts: [["H", "このヘルプ"], ["Ctrl/Cmd+F", "ブラウザ内検索"]],
+    settings: ["このページには固有設定がありません。設定は差分画面のハンバーガーメニューから変更できます。"],
+  } : {
+    title: "ファイル差分のショートカット",
+    shortcuts: [["Tab / Shift+Tab", "補正Bと差分表示を切替"], ["Ctrl/Cmd/Alt+ホイール", "画像を拡大・縮小"], ["H", "このヘルプ"]],
+    settings: [
+      "Git対象拡張子: git差分モードで扱うテキスト形式です。",
+      "Obsidianフォルダー／レポート保存先: Markdown連携とHTML保存に使います。",
+      "表示倍率: アプリ全体のUI倍率です。画像の拡大率とは別です。",
+    ],
+  };
+  return (
+    <div className="shortcut-help-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="shortcut-help-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-help-title">
+        <header><div><HelpCircle size={22} /><h2 id="shortcut-help-title">{content.title}</h2></div><button type="button" onClick={onClose} aria-label="閉じる">×</button></header>
+        <div className="shortcut-help-body">
+          <h3>ショートカット</h3>
+          <dl>{content.shortcuts.map(([key, label]) => <div key={key}><dt><kbd>{key}</kbd></dt><dd>{label}</dd></div>)}</dl>
+          <h3>設定と操作</h3>
+          <ul>{content.settings.map((setting) => <li key={setting}>{setting}</li>)}</ul>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function App() {
+  const [helpOpen, setHelpOpen] = useShortcutHelp();
   const [menuOpen, setMenuOpen] = useState(false);
   const [textExtensions, setTextExtensions] = useState(loadTextExtensions);
   const [extensionDraft, setExtensionDraft] = useState(() => loadTextExtensions().join(", "));
@@ -139,6 +224,7 @@ function App() {
   const [exportBusy, setExportBusy] = useState(false);
   const [exportNotice, setExportNotice] = useState("");
   const [exportSelectionOpen, setExportSelectionOpen] = useState(false);
+  const [reportPreview, setReportPreview] = useState(null);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState("");
   const requestIdRef = useRef(0);
@@ -146,6 +232,52 @@ function App() {
   const previewRequestIdRef = useRef({ left: 0, right: 0 });
   const canvasRefs = useRef({ left: null, right: null });
   const syncingCanvasScrollRef = useRef(false);
+
+  useEffect(() => {
+    if (!reportPreview) return undefined;
+    const timer = window.setTimeout(() => {
+      reportPreview.forEach((entry) => {
+        if (!entry.memoId || !entry.imageMemo) return;
+        storeMemoPayload(entry.memoId, {
+          ...entry.imageMemo,
+          reportOptions: normalizeReportOptions(entry.reportOptions),
+        }).catch(() => setGitError("HTMLプレビュー設定を保存できませんでした"));
+      });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [reportPreview]);
+
+  useEffect(() => {
+    if (!reportPreview) return undefined;
+    const leavePreviewWhenRouteChanges = () => {
+      if (!window.location.hash.startsWith("#report-preview")) setReportPreview(null);
+    };
+    window.addEventListener("hashchange", leavePreviewWhenRouteChanges);
+    window.addEventListener("popstate", leavePreviewWhenRouteChanges);
+    return () => {
+      window.removeEventListener("hashchange", leavePreviewWhenRouteChanges);
+      window.removeEventListener("popstate", leavePreviewWhenRouteChanges);
+    };
+  }, [reportPreview]);
+
+  useEffect(() => {
+    if (!reportPreview) return undefined;
+    async function refreshMemoEdits() {
+      if (document.visibilityState !== "visible") return;
+      const refreshed = await Promise.all(reportPreview.map(async (entry) => {
+        if (!entry.memoId) return entry;
+        const stored = await readMemoPayload(entry.memoId);
+        return stored ? { ...entry, imageMemo: stored, reportOptions: normalizeReportOptions(stored.reportOptions ?? entry.reportOptions) } : entry;
+      }));
+      setReportPreview(refreshed);
+    }
+    window.addEventListener("focus", refreshMemoEdits);
+    document.addEventListener("visibilitychange", refreshMemoEdits);
+    return () => {
+      window.removeEventListener("focus", refreshMemoEdits);
+      document.removeEventListener("visibilitychange", refreshMemoEdits);
+    };
+  }, [reportPreview]);
 
   const canCompare = Boolean(left?.file instanceof File && right?.file instanceof File);
   const comparableGitFiles = useMemo(() => (gitInfo?.files ?? []).filter((file) => file.comparable), [gitInfo]);
@@ -554,6 +686,19 @@ function App() {
     }
   }
 
+  if (reportPreview) {
+    return (
+      <ReportPreviewPage
+        entries={reportPreview}
+        busy={exportBusy}
+        onClose={closeReportPreviewPage}
+        onChange={setReportPreview}
+        onRevertLine={revertPreviewLine}
+        onExport={() => finalizeGitHtml(reportPreview)}
+      />
+    );
+  }
+
   return (
     <main
       className={`app-shell ${activeTab === "git" && currentGitFile?.kind === "text" ? "text-diff-mode" : ""}`}
@@ -668,6 +813,10 @@ function App() {
                 <BookOpenText size={18} />
                 APIエンドポイント説明
                 <ExternalLink size={16} />
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setHelpOpen(true); }}>
+                <HelpCircle size={18} />
+                ショートカットと操作
               </button>
             </div>
           )}
@@ -858,7 +1007,7 @@ function App() {
         />
       ) : <section className="viewer">
         <ImagePane
-          title={activeTab === "git" ? "HEAD" : "A 基準"}
+          title={activeTab === "git" ? "変更前" : "A 基準"}
           side="left"
           active={activeSide === "left"}
           subtitle={activeTab === "git" ? currentGitFile?.head_path : left?.file?.name}
@@ -891,6 +1040,7 @@ function App() {
           onCanvasWheel={handleImageWheel}
         />
       </section>}
+      {helpOpen && <ShortcutHelp page={activeTab === "git" ? "git" : "files"} onClose={() => setHelpOpen(false)} />}
     </main>
   );
 
@@ -980,10 +1130,11 @@ function App() {
     const id = gitImageMemoId(gitInfo.repo_root, currentGitFile.path);
     await openDiffMemoTab(
       memoResult,
-      { file: { name: `HEAD:${currentGitFile.head_path}` } },
+      { file: { name: `変更前:${currentGitFile.head_path}` } },
       { file: { name: currentGitFile.path } },
       setGitError,
       id,
+      { reportPreviewReturn: true },
     );
   }
 
@@ -1026,6 +1177,54 @@ function App() {
         }
         entries.push({ file, data, memo, imageMemo });
       }
+      setReportPreview(entries.map((entry) => ({
+        ...entry,
+        memoId: entry.file.kind === "image" ? gitImageMemoId(gitInfo.repo_root, entry.file.path) : null,
+        reportOptions: normalizeReportOptions(entry.imageMemo?.reportOptions),
+      })));
+      window.history.pushState(null, "", `${window.location.pathname}${window.location.search}#report-preview`);
+      setExportNotice("プレビューを作成しました。内容を調整してから出力してください。");
+    } catch (err) {
+      setGitError(`HTMLプレビューを作成できませんでした: ${err.message}`);
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  async function revertPreviewLine(entryIndex, row) {
+    if (!gitInfo) return;
+    const entry = reportPreview?.[entryIndex];
+    if (!entry || entry.file.kind !== "text") return;
+    setExportBusy(true);
+    setGitError("");
+    try {
+      const restored = await postJson("/git/revert-line", {
+        folder: gitInfo.folder || gitFolder,
+        text_extensions: textExtensions,
+        path: entry.file.path,
+        head_path: entry.file.head_path,
+        row,
+      });
+      setReportPreview((current) => current?.map((item, index) => (
+        index === entryIndex ? { ...item, data: { ...item.data, rows: restored.rows } } : item
+      )) ?? null);
+      if (entry.file.path === currentGitFile?.path) {
+        setGitItem((current) => current ? { ...current, rows: restored.rows } : current);
+      }
+      setExportNotice(`${entry.file.path} の1行を変更前へ戻しました。`);
+    } catch (err) {
+      setGitError(`行を戻せませんでした: ${err.message}`);
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  async function finalizeGitHtml(entries) {
+    if (!gitInfo || !entries.length) return;
+    setExportBusy(true);
+    setExportNotice("");
+    setGitError("");
+    try {
       const html = await buildStandaloneGitReport(gitInfo, entries);
       const filename = gitReportFilename(gitInfo);
       if (gitInfo.source_markdown && obsidianReportFolder) {
@@ -1039,15 +1238,24 @@ function App() {
         downloadTextFile(html, filename, "text/html;charset=utf-8");
         setExportNotice(`HTMLを保存しました（${entries.length}件、外部接続なしで閲覧できます）`);
       }
+      closeReportPreviewPage();
     } catch (err) {
       setGitError(`HTML出力に失敗しました: ${err.message}`);
     } finally {
       setExportBusy(false);
     }
   }
+
+  function closeReportPreviewPage() {
+    setReportPreview(null);
+    if (window.location.hash.startsWith("#report-preview")) {
+      window.history.back();
+    }
+  }
 }
 
 function ApiGuideApp() {
+  const [helpOpen, setHelpOpen] = useShortcutHelp();
   return (
     <main className="api-guide-page">
       <header className="api-guide-header">
@@ -1055,10 +1263,13 @@ function ApiGuideApp() {
           <h1>Visual Diff Tool API Guide</h1>
           <p>外部アプリやAIエージェントが本アプリのAPIを呼び出すための実装仕様</p>
         </div>
-        <a className="primary secondary api-guide-openapi" href="/docs" target="_blank" rel="noreferrer">
-          <ExternalLink size={18} />
-          FastAPI docs
-        </a>
+        <div>
+          <button type="button" className="primary secondary" onClick={() => setHelpOpen(true)}><HelpCircle size={18} />ヘルプ</button>
+          <a className="primary secondary api-guide-openapi" href="/docs" target="_blank" rel="noreferrer">
+            <ExternalLink size={18} />
+            FastAPI docs
+          </a>
+        </div>
       </header>
 
       <section className="api-guide-content">
@@ -1337,6 +1548,20 @@ GET:
 
         <ApiEndpoint
           method="POST"
+          path="/api/git/revert-line"
+          purpose="HTML出力プレビューに表示した変更行を、作業ファイル上でHEADの内容へ1行だけ戻す。"
+          request={`Content-Type: application/json
+{
+  "folder": "/absolute/path/to/repo", "path": "guide.md", "head_path": "guide.md",
+  "text_extensions": [".md"],
+  "row": { "kind": "replace", "old_index": 3, "new_index": 3, "old": "before", "new": "after" }
+}`}
+          response={`{ "path": "guide.md", "rows": [/* 更新後の差分行 */] }`}
+          notes="作業ファイルを書き換える操作。rowの種類・内容・両側インデックスを現在の差分と厳密照合し、プレビュー後にファイルが変わっていれば409で拒否する。対象は設定済みテキスト拡張子のみ。"
+        />
+
+        <ApiEndpoint
+          method="POST"
           path="/api/git/diff"
           purpose="git管理下の現在ファイルとHEAD側画像を比較する。リネーム時は現在パスとHEAD側パスを分けて指定する。"
           request={`Content-Type: application/json
@@ -1362,6 +1587,7 @@ GET:
           </ol>
         </ApiGuideSection>
       </section>
+      {helpOpen && <ShortcutHelp page="api" onClose={() => setHelpOpen(false)} />}
     </main>
   );
 }
@@ -1495,7 +1721,7 @@ function GitToolbar({
       </button>
       <button className="primary report-button" disabled={!canExport || busy || exportBusy} onClick={onExport}>
         {exportBusy ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
-        HTML保存
+        HTMLプレビュー
       </button>
       <button className="primary secondary export-selection-button" disabled={!files.length || busy || exportBusy} onClick={onOpenExportSelection}>
         HTML出力対象 ({exportCount}/{files.length})
@@ -1554,6 +1780,357 @@ function ExportSelectionModal({ files, excludedPaths, busy, onToggle, onIncludeA
   );
 }
 
+function ReportPreviewPage({ entries, busy, onClose, onChange, onRevertLine, onExport }) {
+  const [helpOpen, setHelpOpen] = useShortcutHelp();
+  const [dragIndex, setDragIndex] = useState(null);
+
+  function moveEntry(from, to) {
+    if (to < 0 || to >= entries.length || from === to) return;
+    const next = [...entries];
+    const [entry] = next.splice(from, 1);
+    next.splice(to, 0, entry);
+    onChange(next);
+  }
+
+  function updateImageEntry(index, fields) {
+    onChange(entries.map((entry, entryIndex) => entryIndex === index ? { ...entry, ...fields } : entry));
+  }
+
+  return (
+    <main className="report-preview-page" aria-labelledby="report-preview-title">
+      <header className="report-preview-header">
+        <div><h1 id="report-preview-title">HTML出力プレビュー</h1><p>カードサイズ、画像の位置・倍率・出力領域、カード順を調整してから出力します。</p></div>
+        <div><button type="button" onClick={() => setHelpOpen(true)}><HelpCircle size={17} />ヘルプ</button><button type="button" disabled={busy} onClick={onClose}>閉じる</button><button type="button" className="primary" disabled={busy} onClick={onExport}>{busy ? "処理中…" : "HTMLを出力"}</button></div>
+      </header>
+      <section className="report-preview-content">
+        {entries.map((entry, index) => {
+          const previewImage = entry.data.image_b_aligned ?? entry.data.image_current ?? entry.data.image_a ?? entry.data.image_head;
+          const changedRows = (entry.data.rows ?? []).filter((row) => ["replace", "insert", "delete"].includes(row.kind) && (row.old_number != null || row.new_number != null));
+          return (
+            <article
+              className="report-preview-card"
+              key={`${entry.file.path}-${index}`}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={() => { if (dragIndex != null) moveEntry(dragIndex, index); setDragIndex(null); }}
+            >
+              <header draggable={!busy} onDragStart={() => setDragIndex(index)}>
+                <GripVertical size={19} />
+                <div><strong>{index + 1}. {entry.file.path}</strong><small>{entry.file.kind === "text" ? "テキスト差分" : "画像差分"}</small></div>
+                <button type="button" disabled={busy || index === 0} onClick={() => moveEntry(index, index - 1)}>↑</button>
+                <button type="button" disabled={busy || index === entries.length - 1} onClick={() => moveEntry(index, index + 1)}>↓</button>
+              </header>
+              {entry.file.kind === "text" ? (
+                <div className="report-preview-text">
+                  <div className="report-preview-labels"><b>変更前</b><b>変更後</b><span /></div>
+                  {changedRows.length ? changedRows.map((row, rowIndex) => (
+                    <div className={`report-preview-row ${row.kind}`} key={`${row.old_number}-${row.new_number}-${rowIndex}`}>
+                      <code><i>{row.old_number ?? ""}</i>{row.old ?? ""}</code>
+                      <code><i>{row.new_number ?? ""}</i>{row.new ?? ""}</code>
+                      <button type="button" disabled={busy} title="この行を変更前へ戻す" aria-label="この行を変更前へ戻す" onClick={() => onRevertLine(index, row)}><RotateCcw size={16} /></button>
+                    </div>
+                  )) : <p className="report-preview-clean">差分行はありません。</p>}
+                </div>
+              ) : (
+                <ReportImageEditor
+                  image={previewImage}
+                  imageMemo={entry.imageMemo}
+                  reportOptions={entry.reportOptions}
+                  filePath={entry.file.path}
+                  memoId={entry.memoId}
+                  onChange={(fields) => updateImageEntry(index, fields)}
+                />
+              )}
+            </article>
+          );
+        })}
+      </section>
+      <footer><span>{entries.length}カード</span><button type="button" className="primary" disabled={busy} onClick={onExport}>{busy ? "処理中…" : "HTMLを出力"}</button></footer>
+      {helpOpen && <ShortcutHelp page="report" onClose={() => setHelpOpen(false)} />}
+    </main>
+  );
+}
+
+function ReportImageEditor({ image, imageMemo, reportOptions, filePath, memoId, onChange }) {
+  const notes = normalizeMemoNotes(imageMemo?.notes);
+  const stickies = normalizeStickyNotes(imageMemo?.stickies);
+  const renderStageSize = effectiveMemoStageSize(imageMemo);
+  const [selectedNoteId, setSelectedNoteId] = useState(notes[0]?.id ?? null);
+  const [annotatedImage, setAnnotatedImage] = useState(image ? toDataUri(image) : null);
+  const selectedNote = notes.find((note) => note.id === selectedNoteId) ?? notes[0] ?? null;
+  const selectedView = selectedNote
+    ? normalizeReportView(reportOptions?.views?.[selectedNote.id], selectedNote, renderStageSize)
+    : null;
+  const selectedCrop = selectedNote ? normalizeReportCrop(reportOptions?.crops?.[selectedNote.id]) : null;
+
+  useEffect(() => {
+    if (!image) {
+      setAnnotatedImage(null);
+      return undefined;
+    }
+    let cancelled = false;
+    renderImageWithNotesDataUri(toDataUri(image), notes, renderStageSize, stickies)
+      .then((source) => { if (!cancelled) setAnnotatedImage(source); })
+      .catch(() => { if (!cancelled) setAnnotatedImage(toDataUri(image)); });
+    return () => { cancelled = true; };
+  }, [image, imageMemo]);
+
+  useEffect(() => {
+    if (selectedNote && selectedNote.id !== selectedNoteId) setSelectedNoteId(selectedNote.id);
+  }, [selectedNote?.id, selectedNoteId]);
+
+  function setCrop(nextCrop) {
+    if (!selectedNote) return;
+    onChange({
+      reportOptions: {
+        ...reportOptions,
+        crops: { ...(reportOptions?.crops ?? {}), [selectedNote.id]: normalizeReportCrop(nextCrop) },
+      },
+    });
+  }
+
+  function clearCrop() {
+    if (!selectedNote) return;
+    const crops = { ...(reportOptions?.crops ?? {}) };
+    delete crops[selectedNote.id];
+    onChange({ reportOptions: { ...normalizeReportOptions(reportOptions), crops } });
+  }
+
+  function setView(nextView) {
+    if (!selectedNote) return;
+    onChange({
+      reportOptions: {
+        ...normalizeReportOptions(reportOptions),
+        views: { ...(reportOptions?.views ?? {}), [selectedNote.id]: normalizeReportView(nextView, selectedNote, renderStageSize) },
+      },
+    });
+  }
+
+  function updateMemoText(text) {
+    if (!selectedNote) return;
+    onChange({
+      imageMemo: {
+        ...(imageMemo ?? {}),
+        notes: notes.map((note) => note.id === selectedNote.id ? { ...note, text } : note),
+        stickies,
+      },
+    });
+  }
+
+  return (
+    <div className="report-preview-image-editor">
+      {notes.length > 1 && (
+        <div className="report-preview-note-tabs" aria-label="編集する画像メモ">
+          {notes.map((note, index) => <button type="button" className={selectedNote?.id === note.id ? "active" : ""} key={note.id} onClick={() => setSelectedNoteId(note.id)}>メモ {index + 1}</button>)}
+        </div>
+      )}
+      <div className="report-crop-layout">
+        <div>
+          {annotatedImage ? (
+            <ReportImageViewport
+              src={annotatedImage}
+              view={selectedView}
+              crop={selectedCrop}
+              alt={`${filePath} のメモ付き変更後画像`}
+              onViewChange={setView}
+              onCropChange={setCrop}
+              onClearCrop={clearCrop}
+            />
+          ) : <p className="report-preview-clean">表示できる変更後画像がありません。</p>}
+        </div>
+        <div className="report-preview-memo-editor">
+          <strong>メモ内容</strong>
+          {selectedNote ? <>
+            <span className="memo-list-type">{memoChangeTypeLabel(selectedNote.changeType)}</span>
+            <textarea value={selectedNote.text} onChange={(event) => updateMemoText(event.target.value)} aria-label="HTMLへ出力する画像メモ本文" />
+            <button type="button" onClick={() => setView(defaultMemoReportView(selectedNote, renderStageSize))}>表示をメモ位置へ戻す</button>
+            {memoId && <button type="button" onClick={() => openStoredMemoTab(memoId)}>メモ編集</button>}
+          </> : <p>画像メモはありません。画像メモ画面で追加してください。</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReportImageViewport({ src, view, crop, alt, onViewChange, onCropChange, onClearCrop }) {
+  const stageRef = useRef(null);
+  const dragRef = useRef(null);
+  const resizeRef = useRef(null);
+  const [imageSize, setImageSize] = useState(null);
+  const [stageSize, setStageSize] = useState(null);
+  const [selecting, setSelecting] = useState(false);
+  const [draftCrop, setDraftCrop] = useState(null);
+  const safeView = normalizeReportView(view);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    const update = () => setStageSize({ width: stage.clientWidth, height: stage.clientHeight });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [safeView.cardWidth, safeView.cardHeight]);
+
+  const geometry = reportViewportGeometry(imageSize, stageSize, safeView);
+  const visibleCrop = geometry ? reportVisibleCrop(imageSize, stageSize, safeView) : null;
+  const shownCrop = draftCrop ?? crop;
+  const cropStyle = shownCrop && geometry ? reportCropScreenStyle(shownCrop, geometry) : null;
+
+  function sourcePoint(event) {
+    const rect = stageRef.current?.getBoundingClientRect();
+    if (!rect || !geometry || !imageSize) return null;
+    return {
+      x: clamp(((event.clientX - rect.left - geometry.left) / geometry.width) * 100, 0, 100),
+      y: clamp(((event.clientY - rect.top - geometry.top) / geometry.height) * 100, 0, 100),
+    };
+  }
+
+  function startPointer(event) {
+    if (!geometry) return;
+    event.preventDefault();
+    if (selecting) {
+      const point = sourcePoint(event);
+      if (!point) return;
+      dragRef.current = { mode: "crop", start: point };
+      setDraftCrop({ x: point.x, y: point.y, width: 2, height: 2 });
+    } else {
+      dragRef.current = { mode: "pan", x: event.clientX, y: event.clientY, centerX: geometry.centerX, centerY: geometry.centerY };
+    }
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function movePointer(event) {
+    const drag = dragRef.current;
+    if (!drag || !geometry) return;
+    if (drag.mode === "crop") {
+      const point = sourcePoint(event);
+      if (!point) return;
+      setDraftCrop(normalizeReportCrop({
+        x: Math.min(drag.start.x, point.x),
+        y: Math.min(drag.start.y, point.y),
+        width: Math.abs(point.x - drag.start.x),
+        height: Math.abs(point.y - drag.start.y),
+      }));
+      return;
+    }
+    const centerX = drag.centerX - ((event.clientX - drag.x) / geometry.width) * 100;
+    const centerY = drag.centerY - ((event.clientY - drag.y) / geometry.height) * 100;
+    onViewChange({ ...safeView, centerX: clamp(centerX, 0, 100), centerY: clamp(centerY, 0, 100) });
+  }
+
+  function stopPointer() {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (drag?.mode === "crop" && draftCrop) {
+      onCropChange(draftCrop);
+      setDraftCrop(null);
+      setSelecting(false);
+    }
+  }
+
+  function moveImageWithWheel(event) {
+    if (!geometry) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      const direction = event.deltaY < 0 ? 1 : -1;
+      onViewChange({ ...safeView, zoom: clamp(safeView.zoom + direction * 5, 100, 500) });
+      return;
+    }
+    onViewChange({
+      ...safeView,
+      centerX: clamp(geometry.centerX + (event.deltaX / geometry.width) * 100, 0, 100),
+      centerY: clamp(geometry.centerY + (event.deltaY / geometry.height) * 100, 0, 100),
+    });
+  }
+
+  function startResize(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    resizeRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      width: safeView.cardWidth,
+      height: safeView.cardHeight,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function resizeCard(event) {
+    const resize = resizeRef.current;
+    if (!resize) return;
+    onViewChange({
+      ...safeView,
+      cardWidth: clamp(Math.round(resize.width + event.clientX - resize.x), 420, 1180),
+      cardHeight: clamp(Math.round(resize.height + event.clientY - resize.y), 220, 720),
+    });
+  }
+
+  function stopResize() {
+    resizeRef.current = null;
+  }
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return undefined;
+    stage.addEventListener("wheel", moveImageWithWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", moveImageWithWheel);
+  }, [geometry, safeView]);
+
+  useEffect(() => {
+    const move = (event) => resizeCard(event);
+    const stop = () => stopResize();
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+  }, [safeView]);
+
+  return (
+    <div className="report-view-editor" style={{ width: `min(${safeView.cardWidth}px, 100%)` }}>
+      <div className="report-view-toolbar">
+        <div className="report-view-actions">
+          <button type="button" className={selecting ? "active" : ""} onClick={() => { setSelecting((current) => !current); setDraftCrop(null); }}>領域指定</button>
+          {crop && <button type="button" onClick={onClearCrop}>領域指定を解除</button>}
+          <span>画像倍率 {safeView.zoom}%</span>
+          <span>カード {safeView.cardWidth} × {safeView.cardHeight}px</span>
+        </div>
+      </div>
+      <p className="report-crop-hint">ドラッグまたは2本指スワイプで画像を移動、ピンチで拡大縮小します。右下ハンドルでカードをリサイズできます。</p>
+      <div
+        ref={stageRef}
+        className={`report-crop-stage report-pan-stage ${selecting ? "selecting" : ""}`}
+        style={{ height: `${safeView.cardHeight}px` }}
+        onPointerDown={startPointer}
+        onPointerMove={movePointer}
+        onPointerUp={stopPointer}
+        onPointerCancel={stopPointer}
+      >
+        <img
+          src={src}
+          alt={alt}
+          draggable="false"
+          onLoad={(event) => setImageSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+          style={geometry ? { width: `${geometry.width}px`, height: `${geometry.height}px`, left: `${geometry.left}px`, top: `${geometry.top}px` } : undefined}
+        />
+        {cropStyle && <div className="report-crop-selection" style={cropStyle}><i /><i /><i /><i /></div>}
+        {!crop && visibleCrop && <span className="report-visible-area-badge">表示中の範囲を出力</span>}
+      </div>
+      <button
+        type="button"
+        className="report-card-resize-handle"
+        aria-label="カードをドラッグしてサイズ変更"
+        title="ドラッグしてカードサイズを変更"
+        onPointerDown={startResize}
+      />
+    </div>
+  );
+}
+
 function TextDiffView({ file, item, memo, onMemoChange }) {
   return (
     <section className="text-diff-section">
@@ -1574,8 +2151,8 @@ function TextDiffView({ file, item, memo, onMemoChange }) {
         </label>
       </div>
       <div className="text-diff-columns" aria-label="テキスト差分">
-        <div className="text-column-title">HEAD: {file.head_path}</div>
-        <div className="text-column-title">作業フォルダ: {file.path}</div>
+        <div className="text-column-title">変更前: {file.head_path}</div>
+        <div className="text-column-title">変更後: {file.path}</div>
         {(item?.rows ?? []).map((row, index) => (
           <React.Fragment key={`${row.old_number ?? "x"}-${row.new_number ?? "x"}-${index}`}>
             <DiffCodeCell side="old" row={row} />
@@ -1606,6 +2183,7 @@ function DiffCodeCell({ side, row }) {
 }
 
 function MemoDiffApp() {
+  const [helpOpen, setHelpOpen] = useShortcutHelp();
   const [payload, setPayload] = useState(null);
   const [loadingPayload, setLoadingPayload] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1624,6 +2202,7 @@ function MemoDiffApp() {
   const [notes, setNotes] = useState([]);
   const [stickies, setStickies] = useState([]);
   const [selectedNoteId, setSelectedNoteId] = useState(null);
+  const [editingNoteId, setEditingNoteId] = useState(null);
   const [annotationTool, setAnnotationTool] = useState(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
@@ -1640,12 +2219,21 @@ function MemoDiffApp() {
   const annotationDrawRef = useRef(null);
   const annotationDragRef = useRef(null);
   const stickyDragRef = useRef(null);
+  const memoHistoryRef = useRef({ past: [], future: [] });
+  const memoHistoryLastRef = useRef(null);
+  const memoHistoryPendingRef = useRef(null);
+  const memoHistoryTimerRef = useRef(null);
+  const memoHistoryRestoringRef = useRef(false);
   const stagePointerRef = useRef({ clientX: 0, clientY: 0, inside: false });
   const safeNotes = useMemo(() => normalizeMemoNotes(notes), [notes]);
   const safeStickies = useMemo(() => normalizeStickyNotes(stickies), [stickies]);
   const selectedNote = useMemo(
     () => safeNotes.find((note) => note.id === selectedNoteId) ?? null,
     [safeNotes, selectedNoteId],
+  );
+  const selectedAnnotation = useMemo(
+    () => selectedNote?.annotations.find((annotation) => annotation.id === selectedAnnotationId) ?? null,
+    [selectedNote, selectedAnnotationId],
   );
 
   useEffect(() => {
@@ -1655,6 +2243,7 @@ function MemoDiffApp() {
       setPayload(nextPayload);
       setNotes(normalizeMemoNotes(nextPayload?.notes));
       setStickies(normalizeStickyNotes(nextPayload?.stickies));
+      setMemoZoom(clamp(Number(nextPayload?.memoZoom) || 100, 10, 300));
       setLoadingPayload(false);
     });
     return () => {
@@ -1706,20 +2295,56 @@ function MemoDiffApp() {
 
   useEffect(() => {
     if (!payload) return undefined;
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       const stage = stageRef.current;
-      storeMemoPayload(memoPayloadIdFromHash(), {
+      const payloadId = memoPayloadIdFromHash();
+      const latestStored = await readMemoPayload(payloadId);
+      storeMemoPayload(payloadId, {
         ...payload,
         notes: normalizeMemoNotes(notes),
         stickies: normalizeStickyNotes(stickies),
-        // offsetWidth/offsetHeight are CSS-layout dimensions. getBoundingClientRect()
-        // includes the app-level CSS zoom and would make exported memo geometry
-        // depend on the user's display-scale setting.
-        stageSize: stage ? { width: stage.offsetWidth, height: stage.offsetHeight } : payload.stageSize ?? null,
+        reportOptions: latestStored?.reportOptions ?? payload.reportOptions ?? null,
+        memoZoom,
+        memoGeometryVersion: 2,
+        // The stage width itself changes with memoZoom. Persist the equivalent
+        // 100% layout dimensions so canvas export never treats a 25% editing
+        // stage as the full-size coordinate system.
+        stageSize: stage ? canonicalMemoStageSize(stage, memoZoom) : payload.stageSize ?? null,
       }).catch(() => setNotice("メモをブラウザに保存できませんでした"));
     }, 180);
     return () => window.clearTimeout(timer);
   }, [payload, notes, stickies, memoZoom]);
+
+  useEffect(() => {
+    if (loadingPayload) return;
+    const current = memoHistorySnapshot(notes, stickies);
+    if (memoHistoryRestoringRef.current) {
+      memoHistoryRestoringRef.current = false;
+      memoHistoryLastRef.current = current;
+      return;
+    }
+    if (!memoHistoryLastRef.current) {
+      memoHistoryLastRef.current = current;
+      return;
+    }
+    if (memoHistorySnapshotEquals(current, memoHistoryLastRef.current)) return;
+    if (!memoHistoryPendingRef.current) {
+      memoHistoryPendingRef.current = cloneMemoHistorySnapshot(memoHistoryLastRef.current);
+    }
+    window.clearTimeout(memoHistoryTimerRef.current);
+    memoHistoryTimerRef.current = window.setTimeout(() => {
+      const base = memoHistoryPendingRef.current;
+      if (base) {
+        memoHistoryRef.current.past.push(base);
+        memoHistoryRef.current.past = memoHistoryRef.current.past.slice(-100);
+        memoHistoryRef.current.future = [];
+      }
+      memoHistoryPendingRef.current = null;
+      memoHistoryLastRef.current = memoHistorySnapshot(notes, stickies);
+    }, 220);
+  }, [loadingPayload, notes, stickies]);
+
+  useEffect(() => () => window.clearTimeout(memoHistoryTimerRef.current), []);
 
   useEffect(() => {
     function closeMenu() {
@@ -1752,37 +2377,80 @@ function MemoDiffApp() {
   }, [selectedNoteId]);
 
   useEffect(() => {
+    function handleHistoryShortcut(event) {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.shiftKey) redoMemoChange();
+      else undoMemoChange();
+    }
+    window.addEventListener("keydown", handleHistoryShortcut, true);
+    return () => window.removeEventListener("keydown", handleHistoryShortcut, true);
+  }, [notes, stickies]);
+
+  useEffect(() => {
+    function handleAnnotationDelete(event) {
+      if (isTypingTarget(event.target) || !selectedNoteId || !selectedAnnotationId) return;
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      event.preventDefault();
+      event.stopPropagation();
+      deleteAnnotation(selectedNoteId, selectedAnnotationId);
+      setNotice("選択中の図形を削除しました");
+      window.setTimeout(() => setNotice(""), 1400);
+    }
+    window.addEventListener("keydown", handleAnnotationDelete, true);
+    return () => window.removeEventListener("keydown", handleAnnotationDelete, true);
+  }, [selectedNoteId, selectedAnnotationId]);
+
+  useEffect(() => {
     function moveNote(event) {
       if (annotationDrawRef.current) {
         const draw = annotationDrawRef.current;
         const point = stagePercentPoint(event, draw.stageRect);
         const x = Math.min(draw.start.x, point.x);
         const width = Math.abs(point.x - draw.start.x);
-        const freeHeight = Math.abs(point.y - draw.start.y);
-        const markerHeight = Math.max(0.1, (4 / draw.stageRect.height) * 100);
-        const height = draw.type === "highlight" ? markerHeight : freeHeight;
-        const y = draw.type === "highlight"
-          ? clamp(draw.start.y - markerHeight / 2, 0, 100 - markerHeight)
-          : Math.min(draw.start.y, point.y);
+        const height = Math.abs(point.y - draw.start.y);
+        const y = Math.min(draw.start.y, point.y);
         draw.width = width;
         draw.height = height;
+        const direction = draw.type === "arrow" ? {
+          reverseX: point.x < draw.start.x,
+          reverseY: point.y < draw.start.y,
+        } : {};
+        const minimumHeight = draw.type === "highlight" ? 0.05 : 0.4;
         setNotes((items) => normalizeMemoNotes(items).map((item) => updateMemoAnnotation(
           item,
           draw.noteId,
           draw.annotationId,
-          { x, y, width: Math.max(0.4, width), height: Math.max(0.4, height) },
+          { x, y, width: Math.max(0.4, width), height: Math.max(minimumHeight, height), ...direction },
         )));
         return;
       }
       if (annotationDragRef.current) {
         const drag = annotationDragRef.current;
+        if (drag.mode === "arrow-start" || drag.mode === "arrow-end") {
+          const point = stagePercentPoint(event, drag.stageRect);
+          const endpoints = memoArrowEndpoints(drag.annotation);
+          const start = drag.mode === "arrow-start" ? point : endpoints.start;
+          const end = drag.mode === "arrow-end" ? point : endpoints.end;
+          setNotes((items) => normalizeMemoNotes(items).map((item) => updateMemoAnnotation(
+            item,
+            drag.noteId,
+            drag.annotationId,
+            arrowAnnotationFromEndpoints(start, end),
+          )));
+          return;
+        }
         const deltaX = ((event.clientX - drag.startX) / drag.stageRect.width) * 100;
         const deltaY = ((event.clientY - drag.startY) / drag.stageRect.height) * 100;
-        const minimumHeight = drag.annotation.type === "highlight" ? 0.1 : 1;
         const fields = drag.mode === "resize"
           ? {
               width: clamp(drag.annotation.width + deltaX, 1, 100 - drag.annotation.x),
-              height: clamp(drag.annotation.height + deltaY, minimumHeight, 100 - drag.annotation.y),
+              height: clamp(
+                drag.annotation.height + deltaY,
+                drag.annotation.type === "highlight" ? 0.05 : 1,
+                100 - drag.annotation.y,
+              ),
             }
           : {
               x: clamp(drag.annotation.x + deltaX, 0, 100 - drag.annotation.width),
@@ -1834,11 +2502,24 @@ function MemoDiffApp() {
       }
       if (!dragRef.current || !stageRef.current) return;
       const draggedNoteId = dragRef.current.id;
-      const { offsetX, offsetY } = dragRef.current;
+      const { offsetX, offsetY, originX, originY, note: originalNote, contentScale } = dragRef.current;
       const rect = stageRef.current.getBoundingClientRect();
       const x = clamp(((event.clientX - rect.left - offsetX) / rect.width) * 100, 0, 88);
       const y = clamp(((event.clientY - rect.top - offsetY) / rect.height) * 100, 0, 82);
-      setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === draggedNoteId ? { ...item, x, y } : item)));
+      const deltaX = (((x - originX) / 100) * stageRef.current.offsetWidth) / contentScale;
+      const deltaY = (((y - originY) / 100) * stageRef.current.offsetHeight) / contentScale;
+      setNotes((items) => normalizeMemoNotes(items).map((item) => (item.id === draggedNoteId ? {
+        ...item,
+        x,
+        y,
+        leaderEndX: originalNote.leaderEndX - deltaX,
+        leaderEndY: originalNote.leaderEndY - deltaY,
+        extraLeaders: originalNote.extraLeaders.map((leader) => ({
+          ...leader,
+          leaderEndX: leader.leaderEndX - deltaX,
+          leaderEndY: leader.leaderEndY - deltaY,
+        })),
+      } : item)));
     }
     function stopDrag() {
       const annotationDraw = annotationDrawRef.current;
@@ -1846,17 +2527,18 @@ function MemoDiffApp() {
       annotationDragRef.current = null;
       stickyDragRef.current = null;
       if (annotationDraw) {
-        const isMarker = annotationDraw.type === "highlight";
-        if (annotationDraw.width < 1 || (!isMarker && annotationDraw.height < 1)) {
+        const isThinHighlight = annotationDraw.type === "highlight" && annotationDraw.width >= 1;
+        if (!isThinHighlight && (annotationDraw.width < 1 || annotationDraw.height < 1)) {
+          const fallbackHeight = annotationDraw.type === "highlight" ? 0.25 : 10;
           setNotes((items) => normalizeMemoNotes(items).map((item) => updateMemoAnnotation(
             item,
             annotationDraw.noteId,
             annotationDraw.annotationId,
             {
               x: clamp(annotationDraw.start.x - 8, 0, 84),
-              y: clamp(annotationDraw.start.y - (isMarker ? 0.2 : 5), 0, isMarker ? 99.6 : 90),
+              y: clamp(annotationDraw.start.y - fallbackHeight / 2, 0, 100 - fallbackHeight),
               width: 16,
-              height: isMarker ? 0.4 : 10,
+              height: fallbackHeight,
             },
           )));
         }
@@ -1923,6 +2605,11 @@ function MemoDiffApp() {
       return [...normalized, next];
     });
     setSelectedNoteId(id);
+    setSelectedAnnotationId(null);
+    setEditingNoteId(id);
+    window.requestAnimationFrame(() => {
+      document.querySelector(`[data-note-id="${CSS.escape(String(id))}"] textarea`)?.focus();
+    });
   }
 
   function addStickyNote() {
@@ -2031,14 +2718,36 @@ function MemoDiffApp() {
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.blur();
+    setEditingNoteId(null);
     setSelectedNoteId(id);
     window.requestAnimationFrame(() => {
       document.querySelector(`[data-memo-list-id="${CSS.escape(String(id))}"]`)?.focus();
     });
   }
 
+  function activateMemoTextEditing(id, target = null) {
+    setSelectedNoteId(id);
+    setSelectedAnnotationId(null);
+    setEditingNoteId(id);
+    window.requestAnimationFrame(() => {
+      const textarea = target?.isConnected
+        ? target
+        : document.querySelector(`[data-note-id="${CSS.escape(String(id))}"] textarea`);
+      textarea?.focus();
+    });
+  }
+
+  function deactivateMemoTextEditing() {
+    setEditingNoteId(null);
+    if (document.activeElement?.matches?.(".memo-note textarea, .memo-editor textarea")) {
+      document.activeElement.blur();
+    }
+  }
+
   function focusMemoNote(id) {
     setSelectedNoteId(id);
+    setSelectedAnnotationId(null);
+    deactivateMemoTextEditing();
     window.requestAnimationFrame(() => {
       const wrap = stageWrapRef.current;
       const note = Array.from(stageRef.current?.querySelectorAll("[data-note-id]") ?? [])
@@ -2061,6 +2770,7 @@ function MemoDiffApp() {
   function deleteNote(id) {
     setNotes((items) => normalizeMemoNotes(items).filter((item) => item.id !== id));
     setSelectedNoteId((current) => (current === id ? null : current));
+    setEditingNoteId((current) => (current === id ? null : current));
     setSelectedAnnotationId(null);
   }
 
@@ -2085,8 +2795,10 @@ function MemoDiffApp() {
       x: start.x,
       y: start.y,
       width: 0.4,
-      height: 0.4,
+      height: annotationTool === "highlight" ? 0.05 : 0.4,
       opacity: annotationTool === "highlight" ? 28 : 82,
+      strokeWidth: annotationTool === "arrow" ? 4 : undefined,
+      arrowHeadSize: annotationTool === "arrow" ? 16 : undefined,
     };
     setNotes((items) => normalizeMemoNotes(items).map((item) => (
       item.id === selectedNoteId ? { ...item, annotations: [...item.annotations, annotation] } : item
@@ -2107,6 +2819,57 @@ function MemoDiffApp() {
     return true;
   }
 
+  function flushMemoHistory() {
+    window.clearTimeout(memoHistoryTimerRef.current);
+    const pending = memoHistoryPendingRef.current;
+    if (pending) {
+      memoHistoryRef.current.past.push(pending);
+      memoHistoryRef.current.past = memoHistoryRef.current.past.slice(-100);
+      memoHistoryRef.current.future = [];
+    }
+    memoHistoryPendingRef.current = null;
+    memoHistoryLastRef.current = memoHistorySnapshot(notes, stickies);
+  }
+
+  function restoreMemoHistorySnapshot(snapshot) {
+    memoHistoryRestoringRef.current = true;
+    memoHistoryLastRef.current = cloneMemoHistorySnapshot(snapshot);
+    setNotes(snapshot.notes);
+    setStickies(snapshot.stickies);
+    setSelectedAnnotationId(null);
+  }
+
+  function undoMemoChange() {
+    flushMemoHistory();
+    const target = memoHistoryRef.current.past.pop();
+    if (!target) return;
+    memoHistoryRef.current.future.push(memoHistorySnapshot(notes, stickies));
+    restoreMemoHistorySnapshot(target);
+    setNotice("前の操作に戻しました");
+    window.setTimeout(() => setNotice(""), 1400);
+  }
+
+  function redoMemoChange() {
+    window.clearTimeout(memoHistoryTimerRef.current);
+    memoHistoryPendingRef.current = null;
+    const target = memoHistoryRef.current.future.pop();
+    if (!target) return;
+    memoHistoryRef.current.past.push(memoHistorySnapshot(notes, stickies));
+    restoreMemoHistorySnapshot(target);
+    setNotice("操作をやり直しました");
+    window.setTimeout(() => setNotice(""), 1400);
+  }
+
+  function updateSelectedAnnotation(fields) {
+    if (!selectedNoteId || !selectedAnnotationId) return;
+    setNotes((items) => normalizeMemoNotes(items).map((item) => updateMemoAnnotation(
+      item,
+      selectedNoteId,
+      selectedAnnotationId,
+      fields,
+    )));
+  }
+
   function startAnnotationTransform(event, note, annotation, mode) {
     event.preventDefault();
     event.stopPropagation();
@@ -2121,9 +2884,14 @@ function MemoDiffApp() {
       startY: event.clientY,
       annotation: { ...annotation },
     };
+    deactivateMemoTextEditing();
     setSelectedNoteId(note.id);
     setSelectedAnnotationId(annotation.id);
     event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function startArrowEndpointDrag(event, note, annotation, endpoint) {
+    startAnnotationTransform(event, note, annotation, `arrow-${endpoint}`);
   }
 
   function deleteAnnotation(noteId, annotationId) {
@@ -2145,8 +2913,18 @@ function MemoDiffApp() {
   function startDrag(event, note) {
     if (event.target.closest("button, input, .memo-leader-handle")) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    dragRef.current = { id: note.id, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
+    dragRef.current = {
+      id: note.id,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      originX: note.x,
+      originY: note.y,
+      contentScale: memoZoom / 100,
+      note: { ...note, extraLeaders: note.extraLeaders.map((leader) => ({ ...leader })) },
+    };
+    deactivateMemoTextEditing();
     setSelectedNoteId(note.id);
+    setSelectedAnnotationId(null);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
@@ -2276,7 +3054,7 @@ function MemoDiffApp() {
   function getMemoStageSize() {
     const stage = stageRef.current;
     if (!stage) return null;
-    return { width: stage.offsetWidth, height: stage.offsetHeight };
+    return canonicalMemoStageSize(stage, memoZoom);
   }
 
   return (
@@ -2293,6 +3071,11 @@ function MemoDiffApp() {
           <p>{payload.nameA ?? "画像A"} / {payload.nameB ?? "画像B"}</p>
         </div>
         <div className="memo-header-tools">
+          {payload.reportPreviewReturn && (
+            <button type="button" className="memo-fit-button" onClick={returnToReportPreview}>
+              HTML出力プレビューへ戻る
+            </button>
+          )}
           <label className="control slider-control">
             <span>A / B {slider}%</span>
             <input type="range" min="0" max="100" value={slider} onChange={(event) => setSlider(Number(event.target.value))} />
@@ -2399,6 +3182,10 @@ function MemoDiffApp() {
                 APIエンドポイント説明
                 <ExternalLink size={16} />
               </button>
+              <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setHelpOpen(true); }}>
+                <HelpCircle size={18} />
+                ショートカットと操作
+              </button>
             </div>
           )}
         </div>
@@ -2445,6 +3232,7 @@ function MemoDiffApp() {
                 style={{ "--memo-list-color": memoColor(note).line }}
                 data-memo-list-id={note.id}
                 onClick={() => focusMemoNote(note.id)}
+                onContextMenu={(event) => openMemoContextMenu(event, note)}
               >
                 <span className="memo-list-copy">
                   <span className="memo-list-type">{memoChangeTypeLabel(note.changeType)}</span>
@@ -2470,9 +3258,16 @@ function MemoDiffApp() {
           {selectedNote && (
         <section className="memo-editor" aria-label="選択中メモの編集">
           <label className="control memo-text-control">
-            <span>メモ本文</span>
+            <span>{editingNoteId === selectedNote.id ? "メモ本文（編集中）" : "メモ本文（ダブルクリックで編集）"}</span>
             <textarea
               value={selectedNote.text}
+              readOnly={editingNoteId !== selectedNote.id}
+              tabIndex={editingNoteId === selectedNote.id ? 0 : -1}
+              className={editingNoteId === selectedNote.id ? "editing" : ""}
+              onDoubleClick={(event) => activateMemoTextEditing(selectedNote.id, event.currentTarget)}
+              onFocus={(event) => {
+                if (editingNoteId !== selectedNote.id) event.currentTarget.blur();
+              }}
               onChange={(event) => updateNote(selectedNote.id, event.target.value)}
               onKeyDown={(event) => finishMemoTextEditing(event, selectedNote.id)}
             />
@@ -2514,6 +3309,32 @@ function MemoDiffApp() {
             />
             <span>文字数に合わせて自動調整</span>
           </label>
+          {selectedAnnotation?.type === "arrow" && (
+            <div className="memo-arrow-controls" aria-label="選択中の矢印設定">
+              <label className="control compact-control">
+                <span>矢印の線の太さ {selectedAnnotation.strokeWidth}px</span>
+                <input
+                  type="range"
+                  min="1"
+                  max="12"
+                  step="1"
+                  value={selectedAnnotation.strokeWidth}
+                  onChange={(event) => updateSelectedAnnotation({ strokeWidth: Number(event.target.value) })}
+                />
+              </label>
+              <label className="control compact-control">
+                <span>矢印の大きさ {selectedAnnotation.arrowHeadSize}px</span>
+                <input
+                  type="range"
+                  min="6"
+                  max="32"
+                  step="1"
+                  value={selectedAnnotation.arrowHeadSize}
+                  onChange={(event) => updateSelectedAnnotation({ arrowHeadSize: Number(event.target.value) })}
+                />
+              </label>
+            </div>
+          )}
         </section>
           )}
 
@@ -2525,7 +3346,7 @@ function MemoDiffApp() {
           onPointerMove={trackStagePointer}
           onPointerEnter={trackStagePointer}
           onPointerLeave={() => { stagePointerRef.current.inside = false; }}
-          style={{ width: `${memoZoom}%` }}
+          style={{ width: `${memoZoom}%`, "--memo-content-scale": memoZoom / 100 }}
         >
           <img className="memo-image memo-image-a" ref={imageARef} src={imageA} alt="画像A" draggable="false" />
           <div className="memo-image-b-clip" style={{ clipPath: `inset(0 0 0 ${slider}%)` }}>
@@ -2581,6 +3402,7 @@ function MemoDiffApp() {
                   height: `${annotation.height}%`,
                   "--annotation-color": color.line,
                   "--annotation-opacity": annotation.opacity / 100,
+                  "--arrow-stroke-width": annotation.strokeWidth,
                 }}
                 title={`${memoAnnotationTypeLabel(annotation.type)}（${memoChangeTypeLabel(note.changeType)}）`}
                 onPointerDown={(event) => startAnnotationTransform(event, note, annotation, "move")}
@@ -2590,26 +3412,57 @@ function MemoDiffApp() {
                   setSelectedAnnotationId(annotation.id);
                 }}
               >
+                {annotation.type === "arrow" && (
+                  <svg className="memo-arrow" aria-hidden="true">
+                    <defs>
+                      <marker
+                        id={`arrowhead-${annotation.id}`}
+                        viewBox="0 0 10 10"
+                        markerWidth={annotation.arrowHeadSize * (memoZoom / 100)}
+                        markerHeight={annotation.arrowHeadSize * (memoZoom / 100)}
+                        refX="9"
+                        refY="5"
+                        orient="auto"
+                        markerUnits="userSpaceOnUse"
+                        preserveAspectRatio="xMidYMid"
+                      >
+                        <path d="M0,0 L10,5 L0,10 Z" fill="var(--annotation-color)" />
+                      </marker>
+                    </defs>
+                    <line
+                      x1={annotation.reverseX ? "100%" : "0%"}
+                      y1={annotation.reverseY ? "100%" : "0%"}
+                      x2={annotation.reverseX ? "0%" : "100%"}
+                      y2={annotation.reverseY ? "0%" : "100%"}
+                      markerEnd={`url(#arrowhead-${annotation.id})`}
+                    />
+                  </svg>
+                )}
                 {selected && <>
-                  <button
-                    type="button"
-                    className="memo-annotation-delete"
-                    title="図形を削除"
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      deleteAnnotation(note.id, annotation.id);
-                    }}
-                  >
-                    <X size={12} />
-                  </button>
-                  <button
+                  {annotation.type === "arrow" ? <>
+                    <button
+                      type="button"
+                      className="memo-arrow-endpoint start"
+                      style={{ left: annotation.reverseX ? "100%" : "0%", top: annotation.reverseY ? "100%" : "0%" }}
+                      aria-label="矢印の起点をドラッグ"
+                      title="ドラッグして矢印の起点を変更"
+                      onPointerDown={(event) => startArrowEndpointDrag(event, note, annotation, "start")}
+                    />
+                    <button
+                      type="button"
+                      className="memo-arrow-endpoint end"
+                      style={{ left: annotation.reverseX ? "0%" : "100%", top: annotation.reverseY ? "0%" : "100%" }}
+                      aria-label="矢印の終点をドラッグ"
+                      title="ドラッグして矢印の終点を変更"
+                      onPointerDown={(event) => startArrowEndpointDrag(event, note, annotation, "end")}
+                    />
+                  </> : <button
                     type="button"
                     className="memo-annotation-resize"
                     aria-label="図形の大きさを変更"
                     title="ドラッグして大きさを変更"
                     onPointerDown={(event) => startAnnotationTransform(event, note, annotation, "resize")}
-                  />
+                  />}
                 </>}
               </div>
             );
@@ -2621,7 +3474,7 @@ function MemoDiffApp() {
               <div
                 key={note.id}
                 data-note-id={note.id}
-                className={`memo-note ${selectedNoteId === note.id ? "selected" : ""}`}
+                className={`memo-note ${selectedNoteId === note.id ? "selected" : ""} ${editingNoteId === note.id ? "editing" : ""}`}
                 style={{
                   ...memoBoxStyle(note),
                   left: `${note.x}%`,
@@ -2633,6 +3486,12 @@ function MemoDiffApp() {
                   "--memo-line": color.line,
                 }}
                 onPointerDown={(event) => startDrag(event, note)}
+                onDoubleClick={(event) => {
+                  if (event.target.closest("button, .memo-leader-handle")) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  activateMemoTextEditing(note.id);
+                }}
                 onContextMenu={(event) => openMemoContextMenu(event, note)}
               >
                 <svg className="memo-leader" viewBox="-420 -240 1040 760" aria-hidden="true">
@@ -2679,7 +3538,16 @@ function MemoDiffApp() {
                 <textarea
                   value={note.text}
                   aria-label="メモ本文"
-                  onFocus={() => setSelectedNoteId(note.id)}
+                  readOnly={editingNoteId !== note.id}
+                  tabIndex={editingNoteId === note.id ? 0 : -1}
+                  onDoubleClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    activateMemoTextEditing(note.id, event.currentTarget);
+                  }}
+                  onFocus={(event) => {
+                    if (editingNoteId !== note.id) event.currentTarget.blur();
+                  }}
                   onChange={(event) => updateNote(note.id, event.target.value)}
                   onKeyDown={(event) => finishMemoTextEditing(event, note.id)}
                 />
@@ -2707,6 +3575,7 @@ function MemoDiffApp() {
           )}
         </div>
       )}
+      {helpOpen && <ShortcutHelp page="memo" onClose={() => setHelpOpen(false)} />}
     </main>
   );
 }
@@ -3025,7 +3894,7 @@ function isSameRegion(a, b) {
   );
 }
 
-async function openDiffMemoTab(result, left, right, onError, fixedId = null) {
+async function openDiffMemoTab(result, left, right, onError, fixedId = null, extraPayload = {}) {
   const id = fixedId ?? (crypto.randomUUID?.() ?? String(Date.now()));
   const existing = fixedId ? await readMemoPayload(id) : null;
   const payload = {
@@ -3036,13 +3905,32 @@ async function openDiffMemoTab(result, left, right, onError, fixedId = null) {
     notes: existing?.notes ?? [],
     stickies: existing?.stickies ?? [],
     stageSize: existing?.stageSize ?? null,
+    memoZoom: existing?.memoZoom ?? 100,
+    memoGeometryVersion: existing?.memoGeometryVersion ?? null,
+    reportOptions: existing?.reportOptions ?? null,
+    ...extraPayload,
   };
   try {
     await storeMemoPayload(id, payload);
-    window.open(`${window.location.origin}${window.location.pathname}#diff-memo/${id}`, "_blank", "noopener,noreferrer");
+    window.open(`${window.location.origin}${window.location.pathname}${window.location.search}#diff-memo/${id}`, "_blank");
   } catch (err) {
     onError?.(`差分メモを開けませんでした: ${err.message}`);
   }
+}
+
+async function openStoredMemoTab(id) {
+  const stored = await readMemoPayload(id);
+  if (stored) await storeMemoPayload(id, { ...stored, reportPreviewReturn: true });
+  window.open(`${window.location.origin}${window.location.pathname}${window.location.search}#diff-memo/${encodeURIComponent(id)}`, "_blank");
+}
+
+function returnToReportPreview() {
+  if (window.opener && !window.opener.closed) {
+    window.opener.focus();
+    window.close();
+    return;
+  }
+  window.location.href = `${window.location.origin}${window.location.pathname}${window.location.search}`;
 }
 
 function loadTextExtensions() {
@@ -3177,28 +4065,32 @@ async function buildStandaloneGitReport(info, entries) {
 
 function buildTextReportSection({ file, data, memo }) {
   const rows = (data.rows ?? []).map((row) => `<div class="code-cell ${oldCellClass(row)}"${reportGapStyle(row, "old")}><span>${row.old_number ?? ""}</span><code>${reportLineHtml(row, "old")}</code></div><div class="code-cell ${newCellClass(row)}"${reportGapStyle(row, "new")}><span>${row.new_number ?? ""}</span><code>${reportLineHtml(row, "new")}</code></div>`).join("");
-  return `<section><h2>${escapeHtml(file.path)} <b class="badge ${escapeHtml(file.change_type)}">${escapeHtml(changeTypeLabel(file.change_type))}</b></h2>${memo.trim() ? `<aside><strong>メモ</strong><p>${escapeHtml(memo).replaceAll("\n", "<br>")}</p></aside>` : ""}<div class="diff-grid"><h3>HEAD: ${escapeHtml(file.head_path)}</h3><h3>作業フォルダ: ${escapeHtml(file.path)}</h3>${rows || '<p class="empty-report">差分行はありません。</p>'}</div></section>`;
+  return `<section><h2>${escapeHtml(file.path)} <b class="badge ${escapeHtml(file.change_type)}">${escapeHtml(changeTypeLabel(file.change_type))}</b></h2>${memo.trim() ? `<aside><strong>メモ</strong><p>${escapeHtml(memo).replaceAll("\n", "<br>")}</p></aside>` : ""}<div class="diff-grid"><h3>変更前: ${escapeHtml(file.head_path)}</h3><h3>変更後: ${escapeHtml(file.path)}</h3>${rows || '<p class="empty-report">差分行はありません。</p>'}</div></section>`;
 }
 
-async function buildImageReportSection({ file, data, imageMemo }) {
+async function buildImageReportSection({ file, data, imageMemo, reportOptions }) {
   const head = data.image_a ?? data.image_head ?? null;
   const current = data.image_b_aligned ?? data.image_current ?? null;
   const notes = normalizeMemoNotes(imageMemo?.notes);
   const stickies = normalizeStickyNotes(imageMemo?.stickies);
+  const renderStageSize = effectiveMemoStageSize(imageMemo);
   const annotateHead = !current && Boolean(head);
   const hasAnnotations = notes.length || stickies.length;
-  const headSrc = head ? (annotateHead && hasAnnotations ? await renderImageWithNotesDataUri(toDataUri(head), notes, imageMemo?.stageSize, stickies) : toDataUri(head)) : null;
-  const currentSrc = current ? (hasAnnotations ? await renderImageWithNotesDataUri(toDataUri(current), notes, imageMemo?.stageSize, stickies) : toDataUri(current)) : null;
+  const headSrc = head ? (annotateHead && hasAnnotations ? await renderImageWithNotesDataUri(toDataUri(head), notes, renderStageSize, stickies) : toDataUri(head)) : null;
+  const currentSrc = current ? (hasAnnotations ? await renderImageWithNotesDataUri(toDataUri(current), notes, renderStageSize, stickies) : toDataUri(current)) : null;
   const memoImageSrc = current ? toDataUri(current) : head ? toDataUri(head) : null;
   const memoCrops = memoImageSrc
-    ? await renderMemoCropDataUris(memoImageSrc, notes, imageMemo?.stageSize, stickies)
+    ? await renderMemoCropDataUris(memoImageSrc, notes, renderStageSize, stickies, reportOptions)
     : notes.map(() => null);
   const panels = [
-    ["HEAD", headSrc],
-    ["作業フォルダ", currentSrc],
+    ["変更前", headSrc],
+    ["変更後", currentSrc],
     ["差分オーバーレイ", data.overlay ? toDataUri(data.overlay) : null],
   ].filter(([, src]) => src).map(([label, src]) => `<figure><figcaption>${label}</figcaption><img src="${src}" alt="${label}"></figure>`).join("");
-  const memoList = notes.length ? `<aside class="report-memos"><strong>画像メモ</strong><div class="memo-card-grid">${notes.map((note, index) => `<article class="memo-card" style="border-color:${memoColor(note).hex}">${memoCrops[index] ? `<img src="${memoCrops[index]}" alt="${escapeHtml(memoAnnotationTypeLabel(note.annotations[0]?.type))}周辺の拡大画像">` : ""}<div><b class="memo-type">${escapeHtml(memoChangeTypeLabel(note.changeType))}</b><p><i class="memo-color-dot" style="background:${memoColor(note).hex}"></i>${escapeHtml(note.text).replaceAll("\n", "<br>")}</p></div></article>`).join("")}</div></aside>` : "";
+  const memoList = notes.length ? `<aside class="report-memos"><strong>画像メモ</strong><div class="memo-card-grid">${notes.map((note, index) => {
+    const view = normalizeReportView(reportOptions?.views?.[note.id], note, renderStageSize);
+    return `<article class="memo-card" style="border-color:${memoColor(note).hex};max-width:${view.cardWidth}px">${memoCrops[index] ? `<div class="memo-card-media" style="height:${view.cardHeight}px"><img src="${memoCrops[index]}" alt="${escapeHtml(memoAnnotationTypeLabel(note.annotations[0]?.type))}周辺の拡大画像"></div>` : ""}<div><b class="memo-type">${escapeHtml(memoChangeTypeLabel(note.changeType))}</b><p><i class="memo-color-dot" style="background:${memoColor(note).hex}"></i>${escapeHtml(note.text).replaceAll("\n", "<br>")}</p></div></article>`;
+  }).join("")}</div></aside>` : "";
   const stickyList = stickies.length ? `<aside class="report-stickies"><strong>付箋</strong><ul>${stickies.map((sticky) => `<li>${escapeHtml(sticky.text).replaceAll("\n", "<br>")}</li>`).join("")}</ul></aside>` : "";
   return `<section><h2>${escapeHtml(file.path)} <b class="badge ${escapeHtml(file.change_type)}">${escapeHtml(changeTypeLabel(file.change_type))}</b></h2>${memoList}${stickyList}<div class="image-grid">${panels || '<p class="empty-report">表示できる画像がありません。</p>'}</div></section>`;
 }
@@ -3233,7 +4125,7 @@ function escapeHtml(value) {
 }
 
 function standaloneReportCss() {
-  return `:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#172033;background:#f1f5f9}*{box-sizing:border-box}body{margin:0;overflow-x:auto}header,footer{padding:14px 1.5vw;background:#172033;color:#fff}header h1{margin:0 0 10px}dl{margin:0;display:flex;gap:18px;flex-wrap:wrap}dl div{display:flex;gap:6px}dt{color:#a8b3c7}dd{margin:0}#report-content{width:100%;margin:12px 0;transform-origin:top left}section{margin:0 0 16px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;overflow:hidden;page-break-inside:avoid}h2{margin:0;padding:10px 12px;background:#e2e8f0;font-size:16px}.badge{margin-left:8px;padding:3px 8px;border-radius:99px;background:#64748b;color:#fff;font-size:11px}.badge.added,.badge.untracked{background:#16803b}.badge.deleted{background:#b42318}aside{margin:8px 12px;padding:9px 11px;border-left:4px solid #eab308;background:#fefce8}aside p,aside ol,aside ul{margin:5px 0 0}.memo-card-grid{margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px}.memo-card{min-width:0;display:grid;grid-template-columns:minmax(120px,42%) 1fr;gap:9px;border:2px solid #64748b;border-radius:6px;padding:7px;background:#fff}.memo-card img{width:100%;height:112px;object-fit:cover;border:1px solid #cbd5e1}.memo-card p{margin:6px 0 0;overflow-wrap:anywhere}.memo-type{display:inline-block;padding:2px 7px;border-radius:99px;background:#e2e8f0;font-size:11px}.memo-color-dot{display:inline-block;width:10px;height:10px;margin-right:6px;border-radius:99px}.diff-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);overflow:auto}.diff-grid h3{position:sticky;top:0;margin:0;padding:8px 10px;background:#172033;color:#fff;font-size:12px}.code-cell{min-width:0;display:grid;grid-template-columns:46px 1fr;border-bottom:1px solid #e2e8f0;background:#fff}.code-cell>span{padding:2px 6px;background:#f8fafc;border-right:1px solid #e2e8f0;text-align:right;color:#64748b;user-select:none}.code-cell code{padding:2px 6px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.code-cell.removed{background:#ffebe9}.code-cell.added{background:#dafbe1}.code-cell mark{padding:0;background:#f7a8a8}.code-cell.added mark{background:#83d997}.image-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:8px;background:#e2e8f0}.image-grid figure{min-width:0;margin:0;background:#fff;border:1px solid #94a3b8}.image-grid figcaption{padding:6px 8px;background:#172033;color:#fff;font-weight:700;font-size:12px}.image-grid img{display:block;width:100%;height:auto}.empty-report{padding:18px}.report-zoom-indicator{position:fixed;right:10px;bottom:10px;padding:5px 8px;border-radius:4px;background:#172033e6;color:#fff;font:12px ui-sans-serif,system-ui,sans-serif;z-index:10}footer{text-align:center;color:#cbd5e1;font-size:12px}@media(max-width:900px){.image-grid{grid-template-columns:1fr}}@media print{header{background:#fff;color:#000;border-bottom:2px solid #000}#report-content{width:100%;margin:8px 0}.diff-grid{font-size:9px}.image-grid{grid-template-columns:1fr 1fr}footer{display:none}}`;
+  return `:root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#172033;background:#f1f5f9}*{box-sizing:border-box}body{margin:0;overflow-x:auto}header,footer{padding:14px 1.5vw;background:#172033;color:#fff}header h1{margin:0 0 10px}dl{margin:0;display:flex;gap:18px;flex-wrap:wrap}dl div{display:flex;gap:6px}dt{color:#a8b3c7}dd{margin:0}#report-content{width:100%;margin:12px 0;transform-origin:top left}section{margin:0 0 16px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;overflow:hidden;page-break-inside:avoid}h2{margin:0;padding:10px 12px;background:#e2e8f0;font-size:16px}.badge{margin-left:8px;padding:3px 8px;border-radius:99px;background:#64748b;color:#fff;font-size:11px}.badge.added,.badge.untracked{background:#16803b}.badge.deleted{background:#b42318}aside{margin:8px 12px;padding:9px 11px;border-left:4px solid #eab308;background:#fefce8}aside p,aside ol,aside ul{margin:5px 0 0}.memo-card-grid{margin-top:8px;display:grid;grid-template-columns:1fr;gap:10px}.memo-card{width:100%;min-width:0;display:grid;grid-template-columns:minmax(180px,44%) 1fr;align-items:start;gap:14px;border:2px solid #64748b;border-radius:8px;padding:10px;background:#fff}.memo-card-media{display:grid;place-items:center;overflow:hidden;background:#fff;border:1px solid #cbd5e1}.memo-card img{display:block;width:100%;height:100%;object-fit:contain}.memo-card p{margin:6px 0 0;overflow-wrap:anywhere;font-size:clamp(15px,2vw,28px);line-height:1.45}.memo-type{display:inline-block;padding:2px 7px;border-radius:99px;background:#e2e8f0;font-size:11px}.memo-color-dot{display:inline-block;width:10px;height:10px;margin-right:6px;border-radius:99px}.diff-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);overflow:auto}.diff-grid h3{position:sticky;top:0;margin:0;padding:8px 10px;background:#172033;color:#fff;font-size:12px}.code-cell{min-width:0;display:grid;grid-template-columns:46px 1fr;border-bottom:1px solid #e2e8f0;background:#fff}.code-cell>span{padding:2px 6px;background:#f8fafc;border-right:1px solid #e2e8f0;text-align:right;color:#64748b;user-select:none}.code-cell code{padding:2px 6px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}.code-cell.removed{background:#ffebe9}.code-cell.added{background:#dafbe1}.code-cell mark{padding:0;background:#f7a8a8}.code-cell.added mark{background:#83d997}.image-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:8px;background:#e2e8f0}.image-grid figure{min-width:0;margin:0;background:#fff;border:1px solid #94a3b8}.image-grid figcaption{padding:6px 8px;background:#172033;color:#fff;font-weight:700;font-size:12px}.image-grid img{display:block;width:100%;height:auto}.empty-report{padding:18px}.report-zoom-indicator{position:fixed;right:10px;bottom:10px;padding:5px 8px;border-radius:4px;background:#172033e6;color:#fff;font:12px ui-sans-serif,system-ui,sans-serif;z-index:10}footer{text-align:center;color:#cbd5e1;font-size:12px}@media(max-width:900px){.image-grid{grid-template-columns:1fr}.memo-card{grid-template-columns:1fr;max-width:100%!important}}@media print{header{background:#fff;color:#000;border-bottom:2px solid #000}#report-content{width:100%;margin:8px 0}.diff-grid{font-size:9px}.image-grid{grid-template-columns:1fr 1fr}footer{display:none}}`;
 }
 
 function standaloneReportScript() {
@@ -3251,7 +4143,7 @@ async function renderImageWithNotesDataUri(imageSrc, notes, stageSize = null, st
   return canvas.toDataURL("image/png");
 }
 
-async function renderMemoCropDataUris(imageSrc, notes, stageSize = null, stickies = []) {
+async function renderMemoCropDataUris(imageSrc, notes, stageSize = null, stickies = [], reportOptions = {}) {
   const image = await loadImage(imageSrc);
   const fullCanvas = document.createElement("canvas");
   fullCanvas.width = image.naturalWidth;
@@ -3263,14 +4155,37 @@ async function renderMemoCropDataUris(imageSrc, notes, stageSize = null, stickie
   drawNotes(fullContext, notes, fullCanvas.width, fullCanvas.height, stageSize, stickies);
 
   return notes.map((note) => {
-    const focus = memoFocusPoint(note, fullCanvas.width, fullCanvas.height, stageSize);
-    const cropWidth = Math.min(fullCanvas.width, Math.max(320, fullCanvas.width * 0.36));
-    const cropHeight = Math.min(fullCanvas.height, Math.max(200, cropWidth * 0.625));
-    const sourceX = clamp(focus.x - cropWidth / 2, 0, Math.max(0, fullCanvas.width - cropWidth));
-    const sourceY = clamp(focus.y - cropHeight / 2, 0, Math.max(0, fullCanvas.height - cropHeight));
+    const selectedCrop = normalizeReportCrop(reportOptions?.crops?.[note.id]);
+    let sourceX;
+    let sourceY;
+    let cropWidth;
+    let cropHeight;
+    if (selectedCrop) {
+      sourceX = (selectedCrop.x / 100) * fullCanvas.width;
+      sourceY = (selectedCrop.y / 100) * fullCanvas.height;
+      cropWidth = Math.max(1, (selectedCrop.width / 100) * fullCanvas.width);
+      cropHeight = Math.max(1, (selectedCrop.height / 100) * fullCanvas.height);
+    } else {
+      const view = normalizeReportView(reportOptions?.views?.[note.id], note, stageSize);
+      const fallbackCrop = reportVisibleCrop(
+        { width: fullCanvas.width, height: fullCanvas.height },
+        { width: view.cardWidth, height: view.cardHeight },
+        view,
+      ) ?? defaultMemoReportCrop(note, stageSize);
+      sourceX = (fallbackCrop.x / 100) * fullCanvas.width;
+      sourceY = (fallbackCrop.y / 100) * fullCanvas.height;
+      cropWidth = Math.max(1, (fallbackCrop.width / 100) * fullCanvas.width);
+      cropHeight = Math.max(1, (fallbackCrop.height / 100) * fullCanvas.height);
+    }
     const cropCanvas = document.createElement("canvas");
-    cropCanvas.width = 480;
-    cropCanvas.height = 300;
+    const aspect = cropWidth / cropHeight;
+    if (aspect >= 1) {
+      cropCanvas.width = 720;
+      cropCanvas.height = Math.max(1, Math.round(720 / aspect));
+    } else {
+      cropCanvas.height = 720;
+      cropCanvas.width = Math.max(1, Math.round(720 * aspect));
+    }
     const cropContext = cropCanvas.getContext("2d");
     cropContext.imageSmoothingEnabled = true;
     cropContext.imageSmoothingQuality = "high";
@@ -3279,6 +4194,138 @@ async function renderMemoCropDataUris(imageSrc, notes, stageSize = null, stickie
     cropContext.drawImage(fullCanvas, sourceX, sourceY, cropWidth, cropHeight, 0, 0, cropCanvas.width, cropCanvas.height);
     return cropCanvas.toDataURL("image/jpeg", 0.88);
   });
+}
+
+function normalizeReportCrop(crop) {
+  if (!crop || typeof crop !== "object") return null;
+  const x = clamp(Number(crop.x) || 0, 0, 98);
+  const y = clamp(Number(crop.y) || 0, 0, 98);
+  const width = clamp(Number(crop.width) || 0, 2, 100 - x);
+  const height = clamp(Number(crop.height) || 0, 2, 100 - y);
+  return { x, y, width, height };
+}
+
+function normalizeReportOptions(options) {
+  return {
+    crops: options?.crops && typeof options.crops === "object" ? options.crops : {},
+    views: options?.views && typeof options.views === "object" ? options.views : {},
+  };
+}
+
+function canonicalMemoStageSize(stage, memoZoom) {
+  const scale = clamp(Number(memoZoom) || 100, 10, 300) / 100;
+  return {
+    width: Math.max(1, stage.offsetWidth / scale),
+    height: Math.max(1, stage.offsetHeight / scale),
+  };
+}
+
+function effectiveMemoStageSize(imageMemo) {
+  const width = Number(imageMemo?.stageSize?.width);
+  const height = Number(imageMemo?.stageSize?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+  if (Number(imageMemo?.memoGeometryVersion) >= 2) return { width, height };
+  // Older payloads stored the already-zoomed stage. Values produced at very
+  // small/large editor zooms make exported labels explode or shrink. Only
+  // retain legacy dimensions that are plausibly a 100% editing stage.
+  if (width < 600 || width > 1600 || height < 300 || height > 1400) return null;
+  return { width, height };
+}
+
+function normalizeReportView(view, note = null, stageSize = null) {
+  const fallback = defaultMemoReportView(note, stageSize);
+  return {
+    centerX: clamp(Number(view?.centerX ?? fallback.centerX), 0, 100),
+    centerY: clamp(Number(view?.centerY ?? fallback.centerY), 0, 100),
+    zoom: clamp(Number(view?.zoom ?? fallback.zoom), 100, 500),
+    cardWidth: clamp(Math.round(Number(view?.cardWidth ?? fallback.cardWidth)), 420, 1180),
+    cardHeight: clamp(Math.round(Number(view?.cardHeight ?? fallback.cardHeight)), 220, 720),
+  };
+}
+
+function defaultMemoReportView(note, stageSize = null) {
+  const width = Math.max(1, Number(stageSize?.width) || 1000);
+  const height = Math.max(1, Number(stageSize?.height) || 700);
+  if (!note) return { centerX: 50, centerY: 50, zoom: 100, cardWidth: 900, cardHeight: 420 };
+  const focus = memoFocusPoint(note, width, height, stageSize);
+  return {
+    centerX: clamp((focus.x / width) * 100, 0, 100),
+    centerY: clamp((focus.y / height) * 100, 0, 100),
+    zoom: 200,
+    cardWidth: 900,
+    cardHeight: 420,
+  };
+}
+
+function reportViewportGeometry(imageSize, viewportSize, view) {
+  if (!imageSize?.width || !imageSize?.height || !viewportSize?.width || !viewportSize?.height) return null;
+  const scale = Math.min(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height) * (view.zoom / 100);
+  const width = imageSize.width * scale;
+  const height = imageSize.height * scale;
+  const minCenterX = width > viewportSize.width ? (viewportSize.width / (2 * width)) * 100 : 50;
+  const minCenterY = height > viewportSize.height ? (viewportSize.height / (2 * height)) * 100 : 50;
+  const centerX = clamp(view.centerX, minCenterX, 100 - minCenterX);
+  const centerY = clamp(view.centerY, minCenterY, 100 - minCenterY);
+  return {
+    width,
+    height,
+    centerX,
+    centerY,
+    left: viewportSize.width / 2 - (centerX / 100) * width,
+    top: viewportSize.height / 2 - (centerY / 100) * height,
+  };
+}
+
+function reportVisibleCrop(imageSize, viewportSize, view) {
+  const geometry = reportViewportGeometry(imageSize, viewportSize, view);
+  if (!geometry) return null;
+  const left = clamp((-geometry.left / geometry.width) * 100, 0, 100);
+  const top = clamp((-geometry.top / geometry.height) * 100, 0, 100);
+  const right = clamp(((viewportSize.width - geometry.left) / geometry.width) * 100, 0, 100);
+  const bottom = clamp(((viewportSize.height - geometry.top) / geometry.height) * 100, 0, 100);
+  return normalizeReportCrop({ x: left, y: top, width: right - left, height: bottom - top });
+}
+
+function reportCropScreenStyle(crop, geometry) {
+  return {
+    left: `${geometry.left + (crop.x / 100) * geometry.width}px`,
+    top: `${geometry.top + (crop.y / 100) * geometry.height}px`,
+    width: `${(crop.width / 100) * geometry.width}px`,
+    height: `${(crop.height / 100) * geometry.height}px`,
+  };
+}
+
+function defaultMemoReportCrop(note, stageSize = null) {
+  if (note?.annotations?.length) {
+    const bounds = note.annotations.reduce((result, annotation) => ({
+      left: Math.min(result.left, annotation.x),
+      top: Math.min(result.top, annotation.y),
+      right: Math.max(result.right, annotation.x + annotation.width),
+      bottom: Math.max(result.bottom, annotation.y + annotation.height),
+    }), { left: 100, top: 100, right: 0, bottom: 0 });
+    const paddingX = Math.max(7, (bounds.right - bounds.left) * 0.45);
+    const paddingY = Math.max(7, (bounds.bottom - bounds.top) * 0.65);
+    const x = clamp(bounds.left - paddingX, 0, 98);
+    const y = clamp(bounds.top - paddingY, 0, 98);
+    return normalizeReportCrop({
+      x,
+      y,
+      width: Math.min(100 - x, bounds.right - bounds.left + paddingX * 2),
+      height: Math.min(100 - y, bounds.bottom - bounds.top + paddingY * 2),
+    });
+  }
+  const leader = memoNoteLeaders(note)[0];
+  const stageWidth = Number(stageSize?.width) || 1000;
+  const stageHeight = Number(stageSize?.height) || 700;
+  const focusX = clamp(note.x + (leader.endX / stageWidth) * 100, 0, 100);
+  const focusY = clamp(note.y + (leader.endY / stageHeight) * 100, 0, 100);
+  const left = Math.min(note.x, focusX);
+  const top = Math.min(note.y, focusY);
+  const right = Math.max(note.x + (memoSize(note).width / stageWidth) * 100, focusX);
+  const bottom = Math.max(note.y + (memoSize(note).height / stageHeight) * 100, focusY);
+  const x = clamp(left - 8, 0, 98);
+  const y = clamp(top - 8, 0, 98);
+  return normalizeReportCrop({ x, y, width: Math.min(100 - x, right - left + 16), height: Math.min(100 - y, bottom - top + 16) });
 }
 
 function memoFocusPoint(note, width, height, stageSize = null) {
@@ -3460,17 +4507,64 @@ function normalizeMemoAnnotations(annotations) {
       const type = MEMO_ANNOTATION_TYPES.some((item) => item.id === annotation.type) ? annotation.type : "rectangle";
       const x = clamp(Number(annotation.x) || 0, 0, 99);
       const y = clamp(Number(annotation.y) || 0, 0, 99);
-      const rawHeight = Number(annotation.height) || 1;
+      const minimumHeight = type === "highlight" ? 0.05 : 0.4;
       return {
         id: annotation.id ? String(annotation.id) : `recovered-annotation-${index}`,
         type,
         x,
         y,
         width: clamp(Number(annotation.width) || 1, 0.4, 100 - x),
-        height: type === "highlight" ? clamp(rawHeight, 0.1, Math.min(4, 100 - y)) : clamp(rawHeight, 0.4, 100 - y),
+        height: clamp(Number(annotation.height) || minimumHeight, minimumHeight, 100 - y),
         opacity: clamp(Number(annotation.opacity) || (type === "highlight" ? 28 : 82), 10, 100),
+        strokeWidth: clamp(Number(annotation.strokeWidth) || 4, 1, 12),
+        arrowHeadSize: clamp(Number(annotation.arrowHeadSize) || 16, 6, 32),
+        reverseX: Boolean(annotation.reverseX),
+        reverseY: Boolean(annotation.reverseY),
       };
     });
+}
+
+function memoHistorySnapshot(notes, stickies) {
+  return {
+    notes: normalizeMemoNotes(notes),
+    stickies: normalizeStickyNotes(stickies),
+  };
+}
+
+function cloneMemoHistorySnapshot(snapshot) {
+  return JSON.parse(JSON.stringify(snapshot));
+}
+
+function memoHistorySnapshotEquals(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function memoArrowEndpoints(annotation) {
+  return {
+    start: {
+      x: annotation.x + (annotation.reverseX ? annotation.width : 0),
+      y: annotation.y + (annotation.reverseY ? annotation.height : 0),
+    },
+    end: {
+      x: annotation.x + (annotation.reverseX ? 0 : annotation.width),
+      y: annotation.y + (annotation.reverseY ? 0 : annotation.height),
+    },
+  };
+}
+
+function arrowAnnotationFromEndpoints(rawStart, rawEnd) {
+  const start = { x: clamp(rawStart.x, 0, 100), y: clamp(rawStart.y, 0, 100) };
+  const end = { x: clamp(rawEnd.x, 0, 100), y: clamp(rawEnd.y, 0, 100) };
+  const x = Math.min(start.x, end.x);
+  const y = Math.min(start.y, end.y);
+  return {
+    x,
+    y,
+    width: clamp(Math.abs(end.x - start.x), 0.4, 100 - x),
+    height: clamp(Math.abs(end.y - start.y), 0.4, 100 - y),
+    reverseX: start.x > end.x,
+    reverseY: start.y > end.y,
+  };
 }
 
 function updateMemoAnnotation(note, noteId, annotationId, fields) {
@@ -3732,7 +4826,7 @@ function drawNotes(ctx, notes, width, height, stageSize = null, stickies = []) {
     const noteSize = memoSize(note);
     const leaders = memoNoteLeaders(note);
     const color = memoColor(note);
-    drawMemoAnnotations(ctx, note, width, height, color);
+    drawMemoAnnotations(ctx, note, width, height, color, scale);
     ctx.save();
     ctx.font = `700 ${note.fontSize * scale}px sans-serif`;
     const labelWidth = noteSize.width * scale;
@@ -3763,7 +4857,7 @@ function drawNotes(ctx, notes, width, height, stageSize = null, stickies = []) {
   });
 }
 
-function drawMemoAnnotations(ctx, note, width, height, color) {
+function drawMemoAnnotations(ctx, note, width, height, color, scale = 1) {
   note.annotations.forEach((annotation) => {
     const x = (annotation.x / 100) * width;
     const y = (annotation.y / 100) * height;
@@ -3777,6 +4871,25 @@ function drawMemoAnnotations(ctx, note, width, height, color) {
     ctx.lineWidth = lineWidth;
     if (annotation.type === "highlight") {
       ctx.fillRect(x, y, annotationWidth, annotationHeight);
+    } else if (annotation.type === "arrow") {
+      const arrowLineWidth = Math.max(1, annotation.strokeWidth * scale);
+      const startX = x + (annotation.reverseX ? annotationWidth : 0);
+      const startY = y + (annotation.reverseY ? annotationHeight : 0);
+      const endX = x + (annotation.reverseX ? 0 : annotationWidth);
+      const endY = y + (annotation.reverseY ? 0 : annotationHeight);
+      const angle = Math.atan2(endY - startY, endX - startX);
+      const arrowSize = annotation.arrowHeadSize * scale;
+      ctx.lineWidth = arrowLineWidth;
+      ctx.beginPath();
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(endX, endY);
+      ctx.lineTo(endX - arrowSize * Math.cos(angle - Math.PI / 6), endY - arrowSize * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(endX - arrowSize * Math.cos(angle + Math.PI / 6), endY - arrowSize * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
     } else if (annotation.type === "ellipse") {
       ctx.beginPath();
       ctx.ellipse(x + annotationWidth / 2, y + annotationHeight / 2, annotationWidth / 2, annotationHeight / 2, 0, 0, Math.PI * 2);

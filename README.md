@@ -16,7 +16,7 @@ The first implementation focuses on the web app and local Backend API. VSCode ex
 - Switch between aligned B, diff overlay, and mask views.
 - Adjust the diff threshold after comparison without rerunning alignment.
 - Preserve thin drawing-line changes in the diff mask while filtering isolated single-pixel noise.
-- Open a separate diff memo tab after comparison. It provides an A/B slider, draggable color-coded memos and leader lines, change clouds, rectangles, ellipses, thin markers, and independent yellow sticky notes. The memo list is resizable/collapsible and navigates to a selected memo. Annotated A, B, or side-by-side images can be copied from the right-click menu.
+- Open a separate diff memo tab after comparison. It provides an A/B slider, draggable color-coded memos and leader lines, adjustable arrows, change clouds, rectangles, ellipses, thin markers, and independent yellow sticky notes. Memos enter text editing only on double-click; selected drawings have a visible selection frame and support Delete, undo, and redo. The memo list is resizable/collapsible and navigates to a selected memo. Annotated A, B, or side-by-side images can be copied from the right-click menu.
 - Excalidraw conversion is a lightweight built-in renderer. It handles basic shapes and text, and returns warnings for approximated or unsupported features such as embedded images, rotation, arrow heads, text styling, and opacity.
 - Draw.io SVG conversion replaces its browser-only `foreignObject` labels with portable SVG text, preserving full label text and explicit line breaks before rasterization.
 
@@ -57,6 +57,7 @@ http://127.0.0.1:8078/
 - `POST /api/git/files`
 - `POST /api/git/markdown` / `GET /api/git/markdown?path=...`
 - `POST /api/git/item`
+- `POST /api/git/revert-line`
 - `POST /api/git/diff`
 - `GET /api/settings/obsidian`
 - `PUT /api/settings/obsidian`

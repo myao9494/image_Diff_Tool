@@ -586,6 +586,84 @@ class TestBackendPipeline(unittest.TestCase):
             self.assertEqual({item["path"] for item in markdown_body["files"]}, {"assets/linked.svg", "assets/child.svg"})
             self.assertEqual(get_markdown_response.status_code, 200, get_markdown_response.text)
 
+    def test_git_revert_line_restores_later_deleted_line_at_the_original_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text_path = Path(tmp) / "guide.md"
+            text_path.write_text("top\ndeleted one\ndeleted two\nbottom\n", encoding="utf-8")
+            self._git(tmp, "init", "--quiet")
+            self._git(tmp, "config", "user.email", "review@example.com")
+            self._git(tmp, "config", "user.name", "Review")
+            self._git(tmp, "add", "guide.md")
+            self._git(tmp, "commit", "--quiet", "-m", "initial text")
+            text_path.write_text("top\nbottom\n", encoding="utf-8")
+
+            item_response = self.client.post(
+                "/api/git/item",
+                json={
+                    "folder": tmp,
+                    "path": "guide.md",
+                    "head_path": "guide.md",
+                    "kind": "text",
+                    "has_head": True,
+                    "has_current": True,
+                    "text_extensions": [".md"],
+                },
+            )
+            target = next(row for row in item_response.json()["rows"] if row.get("old") == "deleted two")
+            restore_response = self.client.post(
+                "/api/git/revert-line",
+                json={
+                    "folder": tmp,
+                    "path": "guide.md",
+                    "head_path": "guide.md",
+                    "text_extensions": [".md"],
+                    "row": target,
+                },
+            )
+
+            self.assertEqual(restore_response.status_code, 200, restore_response.text)
+            self.assertEqual(text_path.read_text(encoding="utf-8"), "top\ndeleted two\nbottom\n")
+
+    def test_git_revert_line_rejects_a_stale_shifted_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text_path = Path(tmp) / "guide.md"
+            text_path.write_text("top\nold value\nbottom\n", encoding="utf-8")
+            self._git(tmp, "init", "--quiet")
+            self._git(tmp, "config", "user.email", "review@example.com")
+            self._git(tmp, "config", "user.name", "Review")
+            self._git(tmp, "add", "guide.md")
+            self._git(tmp, "commit", "--quiet", "-m", "initial text")
+            text_path.write_text("top\nnew value\nbottom\n", encoding="utf-8")
+
+            item_response = self.client.post(
+                "/api/git/item",
+                json={
+                    "folder": tmp,
+                    "path": "guide.md",
+                    "head_path": "guide.md",
+                    "kind": "text",
+                    "has_head": True,
+                    "has_current": True,
+                    "text_extensions": [".md"],
+                },
+            )
+            stale_row = next(row for row in item_response.json()["rows"] if row.get("kind") == "replace")
+            text_path.write_text("inserted elsewhere\ntop\nnew value\nbottom\n", encoding="utf-8")
+
+            restore_response = self.client.post(
+                "/api/git/revert-line",
+                json={
+                    "folder": tmp,
+                    "path": "guide.md",
+                    "head_path": "guide.md",
+                    "text_extensions": [".md"],
+                    "row": stale_row,
+                },
+            )
+
+            self.assertEqual(restore_response.status_code, 409, restore_response.text)
+            self.assertEqual(text_path.read_text(encoding="utf-8"), "inserted elsewhere\ntop\nnew value\nbottom\n")
+
     def test_obsidian_settings_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             requested_override = Path(tmp) / "request-override"

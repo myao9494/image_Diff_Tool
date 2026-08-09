@@ -423,6 +423,82 @@ def git_item(payload: dict) -> JSONResponse:
     return JSONResponse(response)
 
 
+@app.post("/api/git/revert-line")
+def git_revert_line(payload: dict) -> JSONResponse:
+    """Restore one displayed working-tree diff row to its HEAD value."""
+    folder = _payload_folder(payload)
+    repo = _git_repo_root(folder)
+    rel_path = _safe_git_path(repo, str(payload.get("path") or ""), restrict_to_images=False)
+    head_rel_path = _safe_git_path(repo, str(payload.get("head_path") or rel_path), restrict_to_images=False)
+    text_extensions = _text_extensions_from_payload(payload)
+    if _git_file_kind(rel_path, text_extensions) != "text":
+        raise HTTPException(status_code=422, detail="Only enabled text files can be restored by line")
+    current_path = repo / rel_path
+    if not current_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Current file not found: {rel_path}")
+
+    old_text, _ = _decode_git_text(_git_show(repo, head_rel_path, max_bytes=MAX_TEXT_BYTES))
+    current_bytes = _read_file_limited(current_path, MAX_TEXT_BYTES, rel_path)
+    new_text, current_encoding = _decode_git_text(current_bytes)
+    requested = payload.get("row")
+    if not isinstance(requested, dict) or requested.get("kind") not in {"replace", "insert", "delete"}:
+        raise HTTPException(status_code=422, detail="A changed diff row is required")
+    requested_old_index = requested.get("old_index")
+    requested_new_index = requested.get("new_index")
+    if (
+        not isinstance(requested_old_index, int)
+        or isinstance(requested_old_index, bool)
+        or not isinstance(requested_new_index, int)
+        or isinstance(requested_new_index, bool)
+    ):
+        raise HTTPException(status_code=422, detail="Diff row indexes are required")
+
+    candidates = [
+        row for row in _build_text_diff_rows(old_text, new_text)
+        if row.get("kind") == requested.get("kind")
+        and row.get("old") == requested.get("old")
+        and row.get("new") == requested.get("new")
+        and row.get("old_index") == requested_old_index
+        and row.get("new_index") == requested_new_index
+    ]
+    if not candidates:
+        raise HTTPException(status_code=409, detail="The file changed after the preview. Reload the preview and try again")
+    row = candidates[0]
+    lines = new_text.splitlines()
+    index = int(row["new_index"])
+    if row["kind"] == "insert":
+        if index >= len(lines):
+            raise HTTPException(status_code=409, detail="The target line no longer exists")
+        lines.pop(index)
+    elif row["kind"] == "delete":
+        lines.insert(min(index, len(lines)), str(row.get("old") or ""))
+    else:
+        if index >= len(lines):
+            raise HTTPException(status_code=409, detail="The target line no longer exists")
+        lines[index] = str(row.get("old") or "")
+
+    newline = "\r\n" if b"\r\n" in current_bytes else "\n"
+    restored_text = newline.join(lines)
+    if new_text.endswith(("\n", "\r")):
+        restored_text += newline
+    encoding = "cp932" if current_encoding == "cp932" else "utf-8-sig" if current_encoding == "utf-8-sig" else "utf-8"
+    try:
+        restored_bytes = restored_text.encode(encoding)
+    except UnicodeEncodeError as exc:
+        raise HTTPException(status_code=422, detail=f"Restored text cannot be encoded as {encoding}") from exc
+    temporary = current_path.with_name(f".{current_path.name}.visual-diff-{uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(restored_bytes)
+        temporary.replace(current_path)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail="Could not update the working-tree file") from exc
+    return JSONResponse({"path": rel_path, "rows": _build_text_diff_rows(old_text, restored_text)})
+
+
 @app.post("/api/git/diff", response_model=DiffResponse)
 def git_diff(payload: dict) -> DiffResponse:
     folder = _payload_folder(payload)
@@ -934,7 +1010,9 @@ def _decode_git_text(content: bytes) -> tuple[str, str]:
     control_bytes = sum(byte < 32 and byte not in {9, 10, 12, 13} for byte in content)
     if content and control_bytes / len(content) > 0.01:
         raise HTTPException(status_code=422, detail="Binary content cannot be shown as text")
-    for encoding in ("utf-8-sig", "cp932"):
+    if content.startswith(b"\xef\xbb\xbf"):
+        return content.decode("utf-8-sig"), "utf-8-sig"
+    for encoding in ("utf-8", "cp932"):
         try:
             return content.decode(encoding), encoding
         except UnicodeDecodeError:
@@ -966,6 +1044,11 @@ def _build_text_diff_rows(old_text: str, new_text: str) -> list[dict]:
                     "kind": row_tag,
                     "old_number": old_start + offset + 1 if old_line is not None else None,
                     "new_number": new_start + offset + 1 if new_line is not None else None,
+                    "old_index": old_start + offset if old_line is not None else old_start,
+                    # Deleted rows all belong at the same current-file insertion
+                    # point. Advancing by the old-side offset would restore later
+                    # deleted lines after unrelated following content.
+                    "new_index": new_start + offset if new_line is not None else new_start,
                     "old": old_line,
                     "new": new_line,
                     "old_segments": _inline_diff_segments(old_line or "", new_line or "", "old") if row_tag == "replace" else None,
