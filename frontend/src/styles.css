@@ -915,7 +915,7 @@ select {
 
 .text-diff-columns {
   display: grid;
-  grid-template-columns: minmax(460px, 1fr) minmax(460px, 1fr);
+  grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr);
   overflow: auto;
   flex: 1 1 auto;
   min-height: 0;
@@ -934,8 +934,14 @@ select {
   font-weight: 700;
 }
 
+.text-diff-action-title {
+  padding: 0;
+  border-left: 1px solid #334155;
+  border-right: 1px solid #334155;
+}
+
 .diff-code-cell {
-  min-width: 460px;
+  min-width: 0;
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr);
   border-bottom: 1px solid #283548;
@@ -1002,6 +1008,43 @@ select {
 .diff-code-cell.removed .line-number {
   background: #8f303d;
   color: #ffffff;
+}
+
+.diff-action-cell {
+  min-width: 42px;
+  display: grid;
+  place-items: center;
+  border-right: 1px solid #334155;
+  border-bottom: 1px solid #283548;
+  background: #0f172a;
+}
+
+.diff-action-cell.has-action {
+  background: #1e293b;
+}
+
+.diff-action-cell button {
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  background: #334155;
+  color: #e0f2fe;
+  cursor: pointer;
+}
+
+.diff-action-cell button:hover:not(:disabled) {
+  border-color: #7dd3fc;
+  background: #0369a1;
+  color: #ffffff;
+}
+
+.diff-action-cell button:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 
 .git-export-toggle {
@@ -1532,15 +1575,6 @@ select {
   accent-color: #f97316;
 }
 
-.memo-change-type-control {
-  min-width: 110px;
-}
-
-.memo-change-type-control select {
-  min-width: 110px;
-  padding: 0 8px;
-}
-
 .number-control {
   width: 76px;
 }
@@ -1666,28 +1700,33 @@ select {
   top: 0;
   bottom: 0;
   width: 18px;
-  background: #f8fafc;
+  background: #0ea5e9;
   background-clip: content-box;
-  box-shadow: inset 8px 0 0 transparent, inset -8px 0 0 transparent, 0 0 18px rgba(248, 250, 252, 0.5);
+  box-shadow: inset 8px 0 0 transparent, inset -8px 0 0 transparent, 0 0 12px rgba(14, 165, 233, 0.85);
   cursor: ew-resize;
   padding: 0 8px;
   transform: translateX(-9px);
   pointer-events: auto;
+  z-index: 4;
 }
 
 .comparison-handle span {
   position: absolute;
-  top: 12px;
-  min-width: 28px;
-  height: 24px;
+  top: 10px;
+  min-width: 58px;
+  height: 28px;
+  padding: 0 8px;
   border-radius: 999px;
   display: grid;
   place-items: center;
   background: #111827;
   border: 1px solid #f8fafc;
   color: #f8fafc;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  z-index: 1;
 }
 
 .comparison-handle span:first-child {

@@ -9,6 +9,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
+  ArrowRight,
   ArrowUpRight,
   BookOpenText,
   ChevronDown,
@@ -127,6 +128,7 @@ function ShortcutHelp({ page, onClose }) {
   const content = page === "memo" ? {
     title: "画像メモのショートカット",
     shortcuts: [
+      ["← / →", "前後の画像へ移動（Git差分から開いた場合）"],
       ["T", "メモを追加"], ["L", "選択メモへラインを追加"], ["N", "付箋を追加"],
       ["A", "ドラッグした起点から終点へ矢印を追加"], ["C", "変更雲"], ["R / 2", "矩形"],
       ["O / 4", "楕円"], ["M", "マーカー"], ["Ctrl/Cmd+Z", "元に戻す"],
@@ -134,7 +136,7 @@ function ShortcutHelp({ page, onClose }) {
       ["H", "このヘルプ"], ["Esc", "テキスト編集を終了"],
     ],
     settings: [
-      "メモ本文: 通常クリックは選択・移動、ダブルクリックは文字編集です。Escまたは図形選択で編集を終了します。",
+      "メモ本文: クリックすると文字編集になります。Escまたは図形選択で編集を終了します。",
       "図形: クリックで水色の選択枠を表示します。選択後はDelete／Backspaceで削除できます。",
       "Git対象拡張子: git差分でテキストとして扱う形式を設定します。画像形式は常に対象です。",
       "Obsidianフォルダー: Markdownリンクの解決元です。",
@@ -143,7 +145,7 @@ function ShortcutHelp({ page, onClose }) {
     ],
   } : page === "git" ? {
     title: "git差分のショートカット",
-    shortcuts: [["← / →", "前後の変更ファイルへ移動"], ["Tab / Shift+Tab", "補正Bと差分表示を切替（画像）"], ["H", "このヘルプ"]],
+    shortcuts: [["← / →", "前後の変更ファイルへ移動"], ["変更行の→", "HEAD側の内容を変更後ファイルへ反映して元に戻す"], ["Tab / Shift+Tab", "補正Bと差分表示を切替（画像）"], ["H", "このヘルプ"]],
     settings: [
       "Git対象拡張子: 一覧・HTMLレポートに含めるテキスト形式を設定します。",
       "Obsidianフォルダー: Markdownから関連ファイルをたどる基準です。",
@@ -1003,6 +1005,8 @@ function App() {
           file={currentGitFile}
           item={gitItem}
           memo={currentTextMemo}
+          busy={gitBusy}
+          onRevertLine={revertGitTextLine}
           onMemoChange={(value) => setGitTextMemos((current) => ({ ...current, [currentTextMemoKey]: value }))}
         />
       ) : <section className="viewer">
@@ -1128,13 +1132,26 @@ function App() {
     } : null);
     if (!memoResult) return;
     const id = gitImageMemoId(gitInfo.repo_root, currentGitFile.path);
+    const memoFiles = comparableGitFiles.filter((file) => file.kind === "image");
+    const memoIndex = memoFiles.findIndex((file) => file.path === currentGitFile.path);
     await openDiffMemoTab(
       memoResult,
       { file: { name: `変更前:${currentGitFile.head_path}` } },
       { file: { name: currentGitFile.path } },
       setGitError,
       id,
-      { reportPreviewReturn: true },
+      {
+        reportPreviewReturn: true,
+        memoNavigation: memoIndex >= 0 ? {
+          folder: gitInfo.folder || gitFolder,
+          repo_root: gitInfo.repo_root,
+          files: memoFiles,
+          index: memoIndex,
+          category,
+          diff_threshold: diffThreshold,
+          text_extensions: textExtensions,
+        } : null,
+      },
     );
   }
 
@@ -1216,6 +1233,27 @@ function App() {
       setGitError(`行を戻せませんでした: ${err.message}`);
     } finally {
       setExportBusy(false);
+    }
+  }
+
+  async function revertGitTextLine(row) {
+    if (!gitInfo || !currentGitFile || currentGitFile.kind !== "text") return;
+    setGitBusy(true);
+    setGitError("");
+    try {
+      const restored = await postJson("/git/revert-line", {
+        folder: gitInfo.folder || gitFolder,
+        text_extensions: textExtensions,
+        path: currentGitFile.path,
+        head_path: currentGitFile.head_path,
+        row,
+      });
+      setGitItem((current) => current ? { ...current, rows: restored.rows } : current);
+      setExportNotice(`${currentGitFile.path} の変更行を変更前へ戻し、ファイルに反映しました。`);
+    } catch (err) {
+      setGitError(`行を戻せませんでした: ${err.message}`);
+    } finally {
+      setGitBusy(false);
     }
   }
 
@@ -1689,7 +1727,7 @@ function GitToolbar({
           )}
         </div>
       </label>
-      <button className="primary" disabled={!folder || busy} onClick={onLoad}>
+      <button className="primary" disabled={!folder || busy} onClick={() => onLoad()}>
         {busy ? <Loader2 className="spin" size={18} /> : <FolderOpen size={18} />}
         読み込み
       </button>
@@ -1711,7 +1749,7 @@ function GitToolbar({
         <button title="次のファイル" disabled={!files.length || busy} onClick={onNext}>
           <ChevronRight size={18} />
         </button>
-        <button title="再読み込み" disabled={!folder || busy} onClick={onLoad}>
+        <button title="再読み込み" disabled={!folder || busy} onClick={() => onLoad()}>
           <RefreshCw size={18} />
         </button>
       </div>
@@ -2131,7 +2169,8 @@ function ReportImageViewport({ src, view, crop, alt, onViewChange, onCropChange,
   );
 }
 
-function TextDiffView({ file, item, memo, onMemoChange }) {
+function TextDiffView({ file, item, memo, busy, onRevertLine, onMemoChange }) {
+  const canRevertFile = Boolean(file.has_head && file.has_current);
   return (
     <section className="text-diff-section">
       <div className="text-diff-heading">
@@ -2152,16 +2191,42 @@ function TextDiffView({ file, item, memo, onMemoChange }) {
       </div>
       <div className="text-diff-columns" aria-label="テキスト差分">
         <div className="text-column-title">変更前: {file.head_path}</div>
+        <div className="text-column-title text-diff-action-title" aria-hidden="true" />
         <div className="text-column-title">変更後: {file.path}</div>
         {(item?.rows ?? []).map((row, index) => (
           <React.Fragment key={`${row.old_number ?? "x"}-${row.new_number ?? "x"}-${index}`}>
             <DiffCodeCell side="old" row={row} />
+            <DiffActionCell row={row} busy={busy} onRevertLine={canRevertFile ? onRevertLine : null} />
             <DiffCodeCell side="new" row={row} />
           </React.Fragment>
         ))}
         {!item && <div className="text-diff-empty">差分を読み込んでいます。</div>}
       </div>
     </section>
+  );
+}
+
+function DiffActionCell({ row, busy, onRevertLine }) {
+  const canRevert = Boolean(
+    onRevertLine
+      && ["replace", "insert", "delete"].includes(row.kind)
+      && Number.isInteger(row.old_index)
+      && Number.isInteger(row.new_index),
+  );
+  return (
+    <div className={`diff-action-cell ${canRevert ? "has-action" : ""}`}>
+      {canRevert && (
+        <button
+          type="button"
+          disabled={busy}
+          title="HEAD側の内容を変更後ファイルへ反映して元に戻す"
+          aria-label="HEAD側の内容を変更後ファイルへ反映して元に戻す"
+          onClick={() => onRevertLine(row)}
+        >
+          <ArrowRight size={17} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -2225,6 +2290,8 @@ function MemoDiffApp() {
   const memoHistoryTimerRef = useRef(null);
   const memoHistoryRestoringRef = useRef(false);
   const stagePointerRef = useRef({ clientX: 0, clientY: 0, inside: false });
+  const memoNavigationBusyRef = useRef(false);
+  const memoStateRef = useRef({ payload: null, notes: [], stickies: [], memoZoom: 100 });
   const safeNotes = useMemo(() => normalizeMemoNotes(notes), [notes]);
   const safeStickies = useMemo(() => normalizeStickyNotes(stickies), [stickies]);
   const selectedNote = useMemo(
@@ -2235,6 +2302,26 @@ function MemoDiffApp() {
     () => selectedNote?.annotations.find((annotation) => annotation.id === selectedAnnotationId) ?? null,
     [selectedNote, selectedAnnotationId],
   );
+  memoStateRef.current = { payload, notes, stickies, memoZoom };
+
+  async function persistCurrentMemoState() {
+    const current = memoStateRef.current;
+    if (!current.payload) return;
+    const payloadId = memoPayloadIdFromHash();
+    if (!payloadId) return;
+    const latestStored = await readMemoPayload(payloadId);
+    await storeMemoPayload(payloadId, {
+      ...current.payload,
+      notes: normalizeMemoNotes(current.notes),
+      stickies: normalizeStickyNotes(current.stickies),
+      reportOptions: latestStored?.reportOptions ?? current.payload.reportOptions ?? null,
+      memoZoom: current.memoZoom,
+      memoGeometryVersion: 2,
+      stageSize: stageRef.current
+        ? canonicalMemoStageSize(stageRef.current, current.memoZoom)
+        : current.payload.stageSize ?? null,
+    });
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -2295,22 +2382,8 @@ function MemoDiffApp() {
 
   useEffect(() => {
     if (!payload) return undefined;
-    const timer = window.setTimeout(async () => {
-      const stage = stageRef.current;
-      const payloadId = memoPayloadIdFromHash();
-      const latestStored = await readMemoPayload(payloadId);
-      storeMemoPayload(payloadId, {
-        ...payload,
-        notes: normalizeMemoNotes(notes),
-        stickies: normalizeStickyNotes(stickies),
-        reportOptions: latestStored?.reportOptions ?? payload.reportOptions ?? null,
-        memoZoom,
-        memoGeometryVersion: 2,
-        // The stage width itself changes with memoZoom. Persist the equivalent
-        // 100% layout dimensions so canvas export never treats a 25% editing
-        // stage as the full-size coordinate system.
-        stageSize: stage ? canonicalMemoStageSize(stage, memoZoom) : payload.stageSize ?? null,
-      }).catch(() => setNotice("メモをブラウザに保存できませんでした"));
+    const timer = window.setTimeout(() => {
+      persistCurrentMemoState().catch(() => setNotice("メモをブラウザに保存できませんでした"));
     }, 180);
     return () => window.clearTimeout(timer);
   }, [payload, notes, stickies, memoZoom]);
@@ -2375,6 +2448,18 @@ function MemoDiffApp() {
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [selectedNoteId]);
+
+  useEffect(() => {
+    function handleMemoNavigation(event) {
+      if (isTypingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      if (!payload?.memoNavigation?.files?.length) return;
+      event.preventDefault();
+      navigateMemoImage(event.key === "ArrowRight" ? 1 : -1);
+    }
+    window.addEventListener("keydown", handleMemoNavigation);
+    return () => window.removeEventListener("keydown", handleMemoNavigation);
+  }, [payload]);
 
   useEffect(() => {
     function handleHistoryShortcut(event) {
@@ -2592,6 +2677,88 @@ function MemoDiffApp() {
       x: clamp(centerX - (noteSize.width / stage.offsetWidth) * 50, 0, 88),
       y: clamp(centerY - (noteSize.height / stage.offsetHeight) * 50, 0, 82),
     };
+  }
+
+  async function navigateMemoImage(step) {
+    const current = memoStateRef.current;
+    const navigation = current.payload?.memoNavigation;
+    const files = Array.isArray(navigation?.files) ? navigation.files : [];
+    if (!files.length || memoNavigationBusyRef.current) return;
+
+    const currentIndex = Number.isInteger(Number(navigation.index)) ? Number(navigation.index) : 0;
+    const nextIndex = (currentIndex + step + files.length) % files.length;
+    const target = files[nextIndex];
+    if (!target) return;
+
+    memoNavigationBusyRef.current = true;
+    setNotice("画像を読み込んでいます…");
+    try {
+      await persistCurrentMemoState();
+      let data;
+      if (target.diffable) {
+        data = await postJson("/git/diff", {
+          folder: navigation.folder,
+          path: target.path,
+          head_path: target.head_path,
+          category: navigation.category ?? "汎用",
+          diff_threshold: navigation.diff_threshold ?? 0.1,
+        });
+      } else {
+        data = await postJson("/git/item", {
+          folder: navigation.folder,
+          text_extensions: navigation.text_extensions ?? [],
+          include_text: false,
+          ...target,
+        });
+      }
+
+      const imageA = data.image_a ?? data.image_head ?? data.image_current;
+      const imageB = data.image_b_aligned ?? data.image_current ?? data.image_head;
+      if (!imageA || !imageB) throw new Error("画像を読み込めませんでした");
+
+      const nextId = gitImageMemoId(navigation.repo_root, target.path);
+      const existing = await readMemoPayload(nextId);
+      const nextPayload = {
+        ...current.payload,
+        imageA,
+        imageB,
+        nameA: `変更前:${target.head_path || target.path}`,
+        nameB: target.path,
+        notes: normalizeMemoNotes(existing?.notes),
+        stickies: normalizeStickyNotes(existing?.stickies),
+        stageSize: existing?.stageSize ?? null,
+        memoZoom: clamp(Number(existing?.memoZoom) || current.memoZoom || 100, 10, 300),
+        memoGeometryVersion: existing?.memoGeometryVersion ?? null,
+        reportOptions: existing?.reportOptions ?? null,
+        memoNavigation: { ...navigation, index: nextIndex },
+      };
+      await storeMemoPayload(nextId, nextPayload);
+
+      setPayload(nextPayload);
+      setNotes(nextPayload.notes);
+      setStickies(nextPayload.stickies);
+      setMemoZoom(nextPayload.memoZoom);
+      setSlider(50);
+      setSelectedNoteId(null);
+      setSelectedAnnotationId(null);
+      setEditingNoteId(null);
+      setAnnotationTool(null);
+      setContextMenu(null);
+      setPanning(false);
+      memoHistoryRef.current = { past: [], future: [] };
+      memoHistoryLastRef.current = memoHistorySnapshot(nextPayload.notes, nextPayload.stickies);
+      memoHistoryPendingRef.current = null;
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}#diff-memo/${encodeURIComponent(nextId)}`,
+      );
+      setNotice("");
+    } catch (err) {
+      setNotice(`画像の切り替えに失敗しました: ${err.message}`);
+    } finally {
+      memoNavigationBusyRef.current = false;
+    }
   }
 
   function addNote() {
@@ -2911,7 +3078,7 @@ function MemoDiffApp() {
   }
 
   function startDrag(event, note) {
-    if (event.target.closest("button, input, .memo-leader-handle")) return;
+    if (event.target.closest("button, input, textarea, .memo-leader-handle")) return;
     const rect = event.currentTarget.getBoundingClientRect();
     dragRef.current = {
       id: note.id,
@@ -3043,7 +3210,7 @@ function MemoDiffApp() {
         await copyImageWithNotes(side === "a" ? imageA : imageB, safeNotes, getMemoStageSize(), safeStickies);
       }
       setContextMenu(null);
-      setNotice(side === "pair" ? "元データ / 変更後を左右配置でクリップボードに保存しました" : `画像${side.toUpperCase()}をメモ付きでクリップボードに保存しました`);
+      setNotice(side === "pair" ? "A（旧） / B（新）を左右配置でクリップボードに保存しました" : `画像${side.toUpperCase()}（${side === "a" ? "旧" : "新"}）をメモ付きでクリップボードに保存しました`);
       window.setTimeout(() => setNotice(""), 2400);
     } catch (err) {
       setContextMenu(null);
@@ -3068,7 +3235,7 @@ function MemoDiffApp() {
       <header className="memo-header">
         <div className="memo-header-title">
           <h1>差分メモ</h1>
-          <p>{payload.nameA ?? "画像A"} / {payload.nameB ?? "画像B"}</p>
+          <p>A（旧）: {payload.nameA ?? "画像A"} / B（新）: {payload.nameB ?? "画像B"}</p>
         </div>
         <div className="memo-header-tools">
           {payload.reportPreviewReturn && (
@@ -3077,7 +3244,7 @@ function MemoDiffApp() {
             </button>
           )}
           <label className="control slider-control">
-            <span>A / B {slider}%</span>
+            <span>A（旧） / B（新） {slider}%</span>
             <input type="range" min="0" max="100" value={slider} onChange={(event) => setSlider(Number(event.target.value))} />
           </label>
           <label className="control slider-control">
@@ -3235,7 +3402,6 @@ function MemoDiffApp() {
                 onContextMenu={(event) => openMemoContextMenu(event, note)}
               >
                 <span className="memo-list-copy">
-                  <span className="memo-list-type">{memoChangeTypeLabel(note.changeType)}</span>
                   <span className="memo-list-text">{note.text.trim() || "めも"}</span>
                 </span>
               </button>
@@ -3258,13 +3424,13 @@ function MemoDiffApp() {
           {selectedNote && (
         <section className="memo-editor" aria-label="選択中メモの編集">
           <label className="control memo-text-control">
-            <span>{editingNoteId === selectedNote.id ? "メモ本文（編集中）" : "メモ本文（ダブルクリックで編集）"}</span>
+            <span>{editingNoteId === selectedNote.id ? "メモ本文（編集中）" : "メモ本文（クリックで編集）"}</span>
             <textarea
               value={selectedNote.text}
               readOnly={editingNoteId !== selectedNote.id}
               tabIndex={editingNoteId === selectedNote.id ? 0 : -1}
               className={editingNoteId === selectedNote.id ? "editing" : ""}
-              onDoubleClick={(event) => activateMemoTextEditing(selectedNote.id, event.currentTarget)}
+              onClick={(event) => activateMemoTextEditing(selectedNote.id, event.currentTarget)}
               onFocus={(event) => {
                 if (editingNoteId !== selectedNote.id) event.currentTarget.blur();
               }}
@@ -3291,15 +3457,6 @@ function MemoDiffApp() {
               value={selectedNote.fontSize}
               onChange={(event) => updateNoteFields(selectedNote.id, { fontSize: Number(event.target.value) })}
             />
-          </label>
-          <label className="control memo-change-type-control">
-            <span>変更種別</span>
-            <select
-              value={selectedNote.changeType}
-              onChange={(event) => updateNoteFields(selectedNote.id, { changeType: event.target.value })}
-            >
-              {MEMO_CHANGE_TYPES.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
-            </select>
           </label>
           <label className="check-control">
             <input
@@ -3348,13 +3505,13 @@ function MemoDiffApp() {
           onPointerLeave={() => { stagePointerRef.current.inside = false; }}
           style={{ width: `${memoZoom}%`, "--memo-content-scale": memoZoom / 100 }}
         >
-          <img className="memo-image memo-image-a" ref={imageARef} src={imageA} alt="画像A" draggable="false" />
+          <img className="memo-image memo-image-a" ref={imageARef} src={imageA} alt="画像A（旧）" draggable="false" />
           <div className="memo-image-b-clip" style={{ clipPath: `inset(0 0 0 ${slider}%)` }}>
-            <img className="memo-image" src={imageB} alt="画像B" draggable="false" />
+            <img className="memo-image" src={imageB} alt="画像B（新）" draggable="false" />
           </div>
           <div className="comparison-handle" style={{ left: `${slider}%` }} onPointerDown={startSliderDrag}>
-            <span>A</span>
-            <span>B</span>
+            <span>A（旧）</span>
+            <span>B（新）</span>
           </div>
           {safeStickies.map((sticky) => (
             <div
@@ -3486,12 +3643,6 @@ function MemoDiffApp() {
                   "--memo-line": color.line,
                 }}
                 onPointerDown={(event) => startDrag(event, note)}
-                onDoubleClick={(event) => {
-                  if (event.target.closest("button, .memo-leader-handle")) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  activateMemoTextEditing(note.id);
-                }}
                 onContextMenu={(event) => openMemoContextMenu(event, note)}
               >
                 <svg className="memo-leader" viewBox="-420 -240 1040 760" aria-hidden="true">
@@ -3540,8 +3691,7 @@ function MemoDiffApp() {
                   aria-label="メモ本文"
                   readOnly={editingNoteId !== note.id}
                   tabIndex={editingNoteId === note.id ? 0 : -1}
-                  onDoubleClick={(event) => {
-                    event.preventDefault();
+                  onClick={(event) => {
                     event.stopPropagation();
                     activateMemoTextEditing(note.id, event.currentTarget);
                   }}
@@ -3568,9 +3718,9 @@ function MemoDiffApp() {
             <button onClick={() => { deleteNote(contextMenu.noteId); setContextMenu(null); }}>削除（メモ・ライン・図形）</button>
           ) : (
             <>
-              <button onClick={() => copyMemoImage("pair")}>元データ / 変更後を左右配置でコピー</button>
-              <button onClick={() => copyMemoImage("a")}>画像Aをメモ付きでクリップボードに保存</button>
-              <button onClick={() => copyMemoImage("b")}>画像Bをメモ付きでクリップボードに保存</button>
+              <button onClick={() => copyMemoImage("pair")}>A（旧） / B（新）を左右配置でコピー</button>
+              <button onClick={() => copyMemoImage("a")}>画像A（旧）をメモ付きでクリップボードに保存</button>
+              <button onClick={() => copyMemoImage("b")}>画像B（新）をメモ付きでクリップボードに保存</button>
             </>
           )}
         </div>
@@ -4762,8 +4912,8 @@ async function copySideBySideImageWithNotes(imageASrc, imageBSrc, notes, stageSi
 
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  drawCopyPanelLabel(ctx, "元データ", leftX, scaledPadding, imageAWidth, scaledLabelHeight);
-  drawCopyPanelLabel(ctx, "変更後", rightX, scaledPadding, imageBWidth, scaledLabelHeight);
+  drawCopyPanelLabel(ctx, "A（旧）", leftX, scaledPadding, imageAWidth, scaledLabelHeight);
+  drawCopyPanelLabel(ctx, "B（新）", rightX, scaledPadding, imageBWidth, scaledLabelHeight);
   ctx.drawImage(imageA, leftX, scaledImageTop, imageAWidth, imageAHeight);
   ctx.drawImage(imageB, rightX, scaledImageTop, imageBWidth, imageBHeight);
   ctx.save();
