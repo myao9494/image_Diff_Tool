@@ -1712,17 +1712,17 @@ select {
 
 .comparison-handle span {
   position: absolute;
-  top: 10px;
-  min-width: 58px;
-  height: 28px;
-  padding: 0 8px;
+  top: 12px;
+  min-width: 82px;
+  height: 36px;
+  padding: 0 10px;
   border-radius: 999px;
   display: grid;
   place-items: center;
   background: #111827;
   border: 1px solid #f8fafc;
   color: #f8fafc;
-  font-size: 11px;
+  font-size: 16px;
   font-weight: 800;
   line-height: 1;
   white-space: nowrap;

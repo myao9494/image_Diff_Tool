@@ -113,13 +113,17 @@ const MEMO_COLORS = [
 function useShortcutHelp() {
   const [open, setOpen] = useState(false);
   useEffect(() => {
-    const showHelp = (event) => {
+    const handleHelpShortcut = (event) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        return;
+      }
       if (isTypingTarget(event.target) || event.key.toLowerCase() !== "h") return;
       event.preventDefault();
-      setOpen(true);
+      setOpen((current) => !current);
     };
-    window.addEventListener("keydown", showHelp);
-    return () => window.removeEventListener("keydown", showHelp);
+    window.addEventListener("keydown", handleHelpShortcut);
+    return () => window.removeEventListener("keydown", handleHelpShortcut);
   }, []);
   return [open, setOpen];
 }
@@ -133,10 +137,10 @@ function ShortcutHelp({ page, onClose }) {
       ["A", "ドラッグした起点から終点へ矢印を追加"], ["C", "変更雲"], ["R / 2", "矩形"],
       ["O / 4", "楕円"], ["M", "マーカー"], ["Ctrl/Cmd+Z", "元に戻す"],
       ["Ctrl/Cmd+Shift+Z", "やり直す"], ["Delete", "選択中の図形を削除"],
-      ["H", "このヘルプ"], ["Esc", "テキスト編集を終了"],
+      ["H", "このヘルプの表示／非表示"], ["Esc", "テキスト編集／ヘルプを閉じる"],
     ],
     settings: [
-      "メモ本文: クリックすると文字編集になります。Escまたは図形選択で編集を終了します。",
+      "画像内のメモ本文: ダブルクリックで文字編集になります。上部の本文欄はクリックで編集でき、Escまたは図形選択で編集を終了します。",
       "図形: クリックで水色の選択枠を表示します。選択後はDelete／Backspaceで削除できます。",
       "Git対象拡張子: git差分でテキストとして扱う形式を設定します。画像形式は常に対象です。",
       "Obsidianフォルダー: Markdownリンクの解決元です。",
@@ -160,7 +164,7 @@ function ShortcutHelp({ page, onClose }) {
       "画像はドラッグ／2本指スワイプで移動し、ピンチで拡大・縮小します。右下ハンドルでカードをリサイズできます。",
       "領域指定ボタンで出力範囲を選びます。未指定の場合は現在表示中の範囲を出力します。",
       "テキスト差分の戻すボタンは作業ファイルを1行だけ変更前へ戻します。ファイルがプレビュー後に変わった場合は安全のため拒否します。",
-      "メモ編集で詳細を直した後は、HTML出力プレビューへ戻るボタンでこの画面へ戻れます。",
+      "メモ編集で詳細を直した後は、「戻る」ボタンでHTML出力プレビューへ戻れます。",
     ],
   } : page === "api" ? {
     title: "API説明ページのショートカット",
@@ -3078,7 +3082,7 @@ function MemoDiffApp() {
   }
 
   function startDrag(event, note) {
-    if (event.target.closest("button, input, textarea, .memo-leader-handle")) return;
+    if (event.target.closest("button, input, .memo-leader-handle")) return;
     const rect = event.currentTarget.getBoundingClientRect();
     dragRef.current = {
       id: note.id,
@@ -3240,7 +3244,7 @@ function MemoDiffApp() {
         <div className="memo-header-tools">
           {payload.reportPreviewReturn && (
             <button type="button" className="memo-fit-button" onClick={returnToReportPreview}>
-              HTML出力プレビューへ戻る
+              戻る
             </button>
           )}
           <label className="control slider-control">
@@ -3643,6 +3647,12 @@ function MemoDiffApp() {
                   "--memo-line": color.line,
                 }}
                 onPointerDown={(event) => startDrag(event, note)}
+                onDoubleClick={(event) => {
+                  if (event.target.closest("button, .memo-leader-handle")) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  activateMemoTextEditing(note.id);
+                }}
                 onContextMenu={(event) => openMemoContextMenu(event, note)}
               >
                 <svg className="memo-leader" viewBox="-420 -240 1040 760" aria-hidden="true">
@@ -3691,7 +3701,8 @@ function MemoDiffApp() {
                   aria-label="メモ本文"
                   readOnly={editingNoteId !== note.id}
                   tabIndex={editingNoteId === note.id ? 0 : -1}
-                  onClick={(event) => {
+                  onDoubleClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     activateMemoTextEditing(note.id, event.currentTarget);
                   }}
