@@ -423,6 +423,76 @@ def git_item(payload: dict) -> JSONResponse:
     return JSONResponse(response)
 
 
+@app.post("/api/git/text-diff")
+def git_text_diff(payload: dict) -> JSONResponse:
+    """Build a preview diff for an edited working-tree text value."""
+    folder = _payload_folder(payload)
+    repo = _git_repo_root(folder)
+    rel_path = _safe_git_path(repo, str(payload.get("path") or ""), restrict_to_images=False)
+    head_rel_path = _safe_git_path(repo, str(payload.get("head_path") or rel_path), restrict_to_images=False)
+    text_extensions = _text_extensions_from_payload(payload)
+    if _git_file_kind(rel_path, text_extensions) != "text":
+        raise HTTPException(status_code=422, detail="Only enabled text files can be previewed")
+    has_head = bool(payload.get("has_head", True))
+    previous = _git_show(repo, head_rel_path, max_bytes=MAX_TEXT_BYTES) if has_head else None
+    old_text, _ = _decode_git_text(previous) if previous is not None else ("", "utf-8")
+    new_text = str(payload.get("text") or "")
+    return JSONResponse({"path": rel_path, "rows": _build_text_diff_rows(old_text, new_text), "text_current": new_text})
+
+
+@app.post("/api/git/save-text")
+def save_git_text(payload: dict) -> JSONResponse:
+    """Save an edited text draft back to the working-tree file."""
+    folder = _payload_folder(payload)
+    repo = _git_repo_root(folder)
+    rel_path = _safe_git_path(repo, str(payload.get("path") or ""), restrict_to_images=False)
+    head_rel_path = _safe_git_path(repo, str(payload.get("head_path") or rel_path), restrict_to_images=False)
+    text_extensions = _text_extensions_from_payload(payload)
+    if _git_file_kind(rel_path, text_extensions) != "text":
+        raise HTTPException(status_code=422, detail="Only enabled text files can be saved")
+    current_path = repo / rel_path
+    if not current_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Current file not found: {rel_path}")
+
+    current_bytes = _read_file_limited(current_path, MAX_TEXT_BYTES, rel_path)
+    current_text, current_encoding = _decode_git_text(current_bytes)
+    normalized_current_text = current_text.replace("\r\n", "\n").replace("\r", "\n")
+    base_text = payload.get("base_text")
+    if isinstance(base_text, str) and normalized_current_text != base_text:
+        raise HTTPException(status_code=409, detail="The file changed outside this editor. Reload the preview before saving")
+    edited_text = str(payload.get("text") or "")
+    newline = "\r\n" if b"\r\n" in current_bytes else "\n"
+    normalized_text = edited_text.replace("\r\n", "\n").replace("\r", "\n")
+    serialized_text = normalized_text.replace("\n", newline)
+    encoding = "cp932" if current_encoding == "cp932" else "utf-8-sig" if current_encoding == "utf-8-sig" else "utf-8"
+    try:
+        saved_bytes = serialized_text.encode(encoding)
+    except UnicodeEncodeError as exc:
+        raise HTTPException(status_code=422, detail=f"Edited text cannot be encoded as {encoding}") from exc
+
+    temporary = current_path.with_name(f".{current_path.name}.visual-diff-{uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(saved_bytes)
+        temporary.replace(current_path)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail="Could not save the working-tree file") from exc
+
+    old_bytes = _git_show(repo, head_rel_path, max_bytes=MAX_TEXT_BYTES) if bool(payload.get("has_head", True)) else None
+    old_text, _ = _decode_git_text(old_bytes) if old_bytes is not None else ("", "utf-8")
+    return JSONResponse(
+        {
+            "path": rel_path,
+            "text_current": normalized_text,
+            "rows": _build_text_diff_rows(old_text, normalized_text),
+            "encoding_current": current_encoding,
+        }
+    )
+
+
 @app.post("/api/git/revert-line")
 def git_revert_line(payload: dict) -> JSONResponse:
     """Restore one displayed working-tree diff row to its HEAD value."""

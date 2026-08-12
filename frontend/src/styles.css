@@ -875,6 +875,35 @@ select {
   overflow-wrap: anywhere;
 }
 
+.unsaved-badge {
+  padding: 3px 7px;
+  border-radius: 4px;
+  color: #fecaca;
+  background: #7f1d1d;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.text-save-button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid #60a5fa;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #1d4ed8;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.text-save-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .text-diff-heading label {
   flex: 1 1 600px;
   width: auto;
@@ -958,11 +987,63 @@ select {
 }
 
 .diff-code-cell code {
+  min-width: 0;
+  display: block;
   padding: 1px 7px;
   color: #dbeafe;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  tab-size: 4;
   font: 12px/1.35 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.diff-line-editor-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 18px;
+  display: block;
+}
+
+.diff-line-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  color: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  tab-size: 4;
+  pointer-events: none;
+}
+
+.diff-line-highlight mark {
+  color: transparent !important;
+}
+
+.diff-line-editor {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  overflow: hidden;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  tab-size: 4;
+  font: inherit;
+  line-height: inherit;
+}
+
+.diff-line-editor:focus {
+  outline: 1px solid #7dd3fc;
+  outline-offset: 1px;
 }
 
 .diff-code-cell.removed {

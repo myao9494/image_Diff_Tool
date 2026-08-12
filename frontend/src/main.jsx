@@ -5,7 +5,7 @@
  * バックエンドのAPIに送信して差分比較を行うための機能を提供する。
  * 比較結果は「元画像」「補正B」「差分」「マスク」の各ビューで切り替えて表示できる。
  */
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
@@ -32,6 +32,7 @@ import {
   PanelTopOpen,
   RefreshCw,
   RotateCcw,
+  Save,
   ScanSearch,
   X,
   ZoomIn,
@@ -232,9 +233,12 @@ function App() {
   const [exportSelectionOpen, setExportSelectionOpen] = useState(false);
   const [reportPreview, setReportPreview] = useState(null);
   const [gitBusy, setGitBusy] = useState(false);
+  const [gitTextBusy, setGitTextBusy] = useState(false);
+  const [gitTextHistory, setGitTextHistory] = useState({ path: "", undo: [], redo: [] });
   const [gitError, setGitError] = useState("");
   const requestIdRef = useRef(0);
   const gitRequestIdRef = useRef(0);
+  const gitTextPreviewRequestRef = useRef(0);
   const previewRequestIdRef = useRef({ left: 0, right: 0 });
   const canvasRefs = useRef({ left: null, right: null });
   const syncingCanvasScrollRef = useRef(false);
@@ -295,6 +299,11 @@ function App() {
   const currentGitFile = comparableGitFiles[gitIndex] ?? null;
   const currentTextMemoKey = currentGitFile && gitInfo ? gitMemoKey(gitInfo.repo_root, currentGitFile.path) : "";
   const currentTextMemo = currentTextMemoKey ? gitTextMemos[currentTextMemoKey] ?? "" : "";
+  const currentTextDirty = Boolean(
+    currentGitFile?.kind === "text"
+      && gitItem
+      && normalizeLineEndings(gitItem.text_current ?? "") !== normalizeLineEndings(gitItem.text_saved ?? ""),
+  );
   const activeResult = activeTab === "git" ? gitResult : result;
   const leftPreviewImage = left?.preview ? toDataUri(left.preview) : null;
   const rightPreviewImage = right?.preview ? toDataUri(right.preview) : null;
@@ -452,6 +461,24 @@ function App() {
     window.addEventListener("keydown", handleGitKeys);
     return () => window.removeEventListener("keydown", handleGitKeys);
   }, [activeTab, gitIndex, comparableGitFiles]);
+
+  useEffect(() => {
+    function handleTextEditKeys(event) {
+      if (activeTab !== "git" || currentGitFile?.kind !== "text") return;
+      const modifier = event.ctrlKey || event.metaKey;
+      if (!modifier) return;
+      if (event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        saveGitText();
+      } else if (event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redoGitText();
+        else undoGitText();
+      }
+    }
+    window.addEventListener("keydown", handleTextEditKeys);
+    return () => window.removeEventListener("keydown", handleTextEditKeys);
+  }, [activeTab, currentGitFile, gitItem, gitTextHistory, currentTextDirty]);
 
   useEffect(() => {
     function handleResultViewKeys(event) {
@@ -1025,6 +1052,10 @@ function App() {
           item={gitItem}
           memo={currentTextMemo}
           busy={gitBusy}
+          previewBusy={gitTextBusy}
+          dirty={currentTextDirty}
+          onEditText={editGitText}
+          onSave={saveGitText}
           onRevertLine={revertGitTextLine}
           onMemoChange={(value) => setGitTextMemos((current) => ({ ...current, [currentTextMemoKey]: value }))}
         />
@@ -1136,10 +1167,116 @@ function App() {
     const nextItem = await postJson("/git/item", {
       folder: folderOverride,
       text_extensions: textExtensions,
-      include_text: false,
+      include_text: file.kind === "text",
       ...file,
     });
-    if (requestId === gitRequestIdRef.current) setGitItem(nextItem);
+    if (requestId === gitRequestIdRef.current) {
+      if (file.kind === "text") {
+        const textCurrent = normalizeLineEndings(nextItem.text_current ?? "");
+        const textHead = normalizeLineEndings(nextItem.text_head ?? "");
+        setGitItem({ ...nextItem, text_head: textHead, text_current: textCurrent, text_saved: textCurrent });
+        setGitTextHistory({ path: file.path, undo: [], redo: [] });
+      } else {
+        setGitItem(nextItem);
+        setGitTextHistory({ path: "", undo: [], redo: [] });
+      }
+    }
+  }
+
+  async function previewGitText(nextText, { recordHistory = true } = {}) {
+    if (!currentGitFile || currentGitFile.kind !== "text" || !gitInfo || !gitItem) return;
+    const normalizedText = normalizeLineEndings(nextText);
+    const currentText = normalizeLineEndings(gitItem.text_current ?? "");
+    if (normalizedText === currentText) return;
+    if (recordHistory) {
+      setGitTextHistory((history) => history.path === currentGitFile.path
+        ? { path: history.path, undo: [...history.undo, currentText], redo: [] }
+        : { path: currentGitFile.path, undo: [currentText], redo: [] });
+    }
+    const requestId = gitTextPreviewRequestRef.current + 1;
+    gitTextPreviewRequestRef.current = requestId;
+    setGitItem((current) => current ? { ...current, text_current: normalizedText } : current);
+    setGitTextBusy(true);
+    setGitError("");
+    try {
+      const preview = await postJson("/git/text-diff", {
+        folder: gitInfo.folder || gitFolder,
+        text_extensions: textExtensions,
+        path: currentGitFile.path,
+        head_path: currentGitFile.head_path,
+        has_head: currentGitFile.has_head,
+        text: normalizedText,
+      });
+      if (requestId === gitTextPreviewRequestRef.current) {
+        setGitItem((current) => current ? { ...current, text_current: normalizedText, rows: preview.rows } : current);
+      }
+    } catch (err) {
+      if (requestId === gitTextPreviewRequestRef.current) setGitError(`編集内容を反映できませんでした: ${err.message}`);
+    } finally {
+      if (requestId === gitTextPreviewRequestRef.current) setGitTextBusy(false);
+    }
+  }
+
+  function editGitText(row, value) {
+    if (!gitItem || !Number.isInteger(row.new_index)) return;
+    const lines = normalizeLineEndings(gitItem.text_current ?? "").split("\n");
+    if (row.new_index < 0 || row.new_index >= lines.length) return;
+    lines[row.new_index] = value;
+    previewGitText(lines.join("\n"));
+  }
+
+  function undoGitText() {
+    if (!currentGitFile || !gitItem || gitTextHistory.path !== currentGitFile.path || !gitTextHistory.undo.length) return;
+    const currentText = normalizeLineEndings(gitItem.text_current ?? "");
+    const previousText = gitTextHistory.undo[gitTextHistory.undo.length - 1];
+    setGitTextHistory((history) => ({
+      path: history.path,
+      undo: history.undo.slice(0, -1),
+      redo: [...history.redo, currentText],
+    }));
+    previewGitText(previousText, { recordHistory: false });
+  }
+
+  function redoGitText() {
+    if (!currentGitFile || !gitItem || gitTextHistory.path !== currentGitFile.path || !gitTextHistory.redo.length) return;
+    const currentText = normalizeLineEndings(gitItem.text_current ?? "");
+    const nextText = gitTextHistory.redo[gitTextHistory.redo.length - 1];
+    setGitTextHistory((history) => ({
+      path: history.path,
+      undo: [...history.undo, currentText],
+      redo: history.redo.slice(0, -1),
+    }));
+    previewGitText(nextText, { recordHistory: false });
+  }
+
+  async function saveGitText() {
+    if (!currentGitFile || currentGitFile.kind !== "text" || !gitInfo || !gitItem || !currentTextDirty || gitTextBusy) return;
+    const text = normalizeLineEndings(gitItem.text_current ?? "");
+    setGitTextBusy(true);
+    setGitError("");
+    try {
+      const saved = await postJson("/git/save-text", {
+        folder: gitInfo.folder || gitFolder,
+        text_extensions: textExtensions,
+        path: currentGitFile.path,
+        head_path: currentGitFile.head_path,
+        has_head: currentGitFile.has_head,
+        base_text: normalizeLineEndings(gitItem.text_saved ?? ""),
+        text,
+      });
+      setGitItem((current) => current ? {
+        ...current,
+        text_current: normalizeLineEndings(saved.text_current ?? text),
+        text_saved: normalizeLineEndings(saved.text_current ?? text),
+        rows: saved.rows,
+      } : current);
+      setGitTextHistory({ path: currentGitFile.path, undo: [], redo: [] });
+      setExportNotice(`${currentGitFile.path} を保存しました。`);
+    } catch (err) {
+      setGitError(`保存できませんでした: ${err.message}`);
+    } finally {
+      setGitTextBusy(false);
+    }
   }
 
   async function openGitMemo() {
@@ -1256,24 +1393,19 @@ function App() {
   }
 
   async function revertGitTextLine(row) {
-    if (!gitInfo || !currentGitFile || currentGitFile.kind !== "text") return;
-    setGitBusy(true);
-    setGitError("");
-    try {
-      const restored = await postJson("/git/revert-line", {
-        folder: gitInfo.folder || gitFolder,
-        text_extensions: textExtensions,
-        path: currentGitFile.path,
-        head_path: currentGitFile.head_path,
-        row,
-      });
-      setGitItem((current) => current ? { ...current, rows: restored.rows } : current);
-      setExportNotice(`${currentGitFile.path} の変更行を変更前へ戻し、ファイルに反映しました。`);
-    } catch (err) {
-      setGitError(`行を戻せませんでした: ${err.message}`);
-    } finally {
-      setGitBusy(false);
+    if (!gitItem || !currentGitFile || currentGitFile.kind !== "text") return;
+    const lines = normalizeLineEndings(gitItem.text_current ?? "").split("\n");
+    const index = Number.isInteger(row.new_index) ? row.new_index : lines.length;
+    if (row.kind === "insert") {
+      if (index >= 0 && index < lines.length) lines.splice(index, 1);
+    } else if (row.kind === "delete") {
+      lines.splice(Math.max(0, Math.min(index, lines.length)), 0, String(row.old ?? ""));
+    } else if (row.kind === "replace" && index >= 0 && index < lines.length) {
+      lines[index] = String(row.old ?? "");
+    } else {
+      return;
     }
+    previewGitText(lines.join("\n"));
   }
 
   async function finalizeGitHtml(entries) {
@@ -2198,8 +2330,9 @@ function ReportImageViewport({ src, view, crop, alt, onViewChange, onCropChange,
   );
 }
 
-function TextDiffView({ file, item, memo, busy, onRevertLine, onMemoChange }) {
+function TextDiffView({ file, item, memo, busy, previewBusy, dirty, onEditText, onSave, onRevertLine, onMemoChange }) {
   const canRevertFile = Boolean(file.has_head && file.has_current);
+  const editableLines = useMemo(() => normalizeLineEndings(item?.text_current ?? "").split("\n"), [item?.text_current]);
   return (
     <section className="text-diff-section">
       <div className="text-diff-heading">
@@ -2207,6 +2340,17 @@ function TextDiffView({ file, item, memo, busy, onRevertLine, onMemoChange }) {
           <FileText size={20} />
           <strong>{file.path}</strong>
           <span className={`change-badge ${file.change_type}`}>{changeTypeLabel(file.change_type)}</span>
+          {dirty && <span className="unsaved-badge">未保存</span>}
+          <button
+            type="button"
+            className="text-save-button"
+            disabled={!dirty || busy || previewBusy}
+            onClick={onSave}
+            title="変更後の内容を元のテキストファイルへ保存（Ctrl/Cmd+S）"
+          >
+            <Save size={15} />
+            保存
+          </button>
         </div>
         <label>
           <textarea
@@ -2225,8 +2369,15 @@ function TextDiffView({ file, item, memo, busy, onRevertLine, onMemoChange }) {
         {(item?.rows ?? []).map((row, index) => (
           <React.Fragment key={`${row.old_number ?? "x"}-${row.new_number ?? "x"}-${index}`}>
             <DiffCodeCell side="old" row={row} />
-            <DiffActionCell row={row} busy={busy} onRevertLine={canRevertFile ? onRevertLine : null} />
-            <DiffCodeCell side="new" row={row} />
+            <DiffActionCell row={row} busy={busy || previewBusy} onRevertLine={canRevertFile ? onRevertLine : null} />
+            <DiffCodeCell
+              side="new"
+              row={row}
+              editable
+              editableText={Number.isInteger(row.new_index) ? editableLines[row.new_index] ?? row.new ?? "" : row.new ?? ""}
+              onEdit={onEditText}
+              disabled={busy}
+            />
           </React.Fragment>
         ))}
         {!item && <div className="text-diff-empty">差分を読み込んでいます。</div>}
@@ -2259,7 +2410,45 @@ function DiffActionCell({ row, busy, onRevertLine }) {
   );
 }
 
-function DiffCodeCell({ side, row }) {
+function DiffLineEditor({ number, row, value, segments, onEdit, disabled }) {
+  const editorRef = useRef(null);
+  const segmentText = segments?.map((segment) => segment.text).join("") ?? "";
+  const showHighlight = Boolean(segments?.length && segmentText === value);
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.style.height = "auto";
+    editor.style.height = `${Math.max(18, editor.scrollHeight)}px`;
+  }, [value]);
+
+  return (
+    <span className="diff-line-editor-wrap">
+      <span className="diff-line-highlight" aria-hidden="true">
+        {showHighlight ? segments.map((segment, index) => (
+          <mark key={index} className={segment.changed ? "changed" : ""}>{segment.text}</mark>
+        )) : value}
+      </span>
+      <textarea
+        ref={editorRef}
+        className="diff-line-editor"
+        aria-label={`変更後 ${number ?? ""}行目`}
+        rows={1}
+        wrap="soft"
+        value={value}
+        disabled={disabled}
+        spellCheck="false"
+        onInput={(event) => {
+          event.currentTarget.style.height = "auto";
+          event.currentTarget.style.height = `${Math.max(18, event.currentTarget.scrollHeight)}px`;
+        }}
+        onChange={(event) => onEdit(row, event.target.value)}
+      />
+    </span>
+  );
+}
+
+function DiffCodeCell({ side, row, editable = false, editableText = "", onEdit, disabled = false }) {
   const number = side === "old" ? row.old_number : row.new_number;
   const text = side === "old" ? row.old : row.new;
   const segments = side === "old" ? row.old_segments : row.new_segments;
@@ -2269,7 +2458,16 @@ function DiffCodeCell({ side, row }) {
   return (
     <div className={`diff-code-cell ${className}`}>
       <span className="line-number">{number ?? ""}</span>
-      <code>{segments ? segments.map((segment, index) => (
+      <code>{editable && side === "new" && row.new !== null && Number.isInteger(row.new_index) ? (
+        <DiffLineEditor
+          number={number}
+          row={row}
+          value={editableText}
+          segments={segments}
+          onEdit={onEdit}
+          disabled={disabled}
+        />
+      ) : segments ? segments.map((segment, index) => (
         <mark key={index} className={segment.changed ? "changed" : ""}>{segment.text}</mark>
       )) : row.kind === "insert" || row.kind === "delete" ? <mark className="changed">{text ?? ""}</mark> : text ?? ""}</code>
     </div>
@@ -4662,6 +4860,10 @@ function extensionForFilename(filename) {
 
 function isTypingTarget(target) {
   return ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName) || target?.isContentEditable;
+}
+
+function normalizeLineEndings(value) {
+  return String(value ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function normalizeStickyNotes(stickies) {
