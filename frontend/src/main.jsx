@@ -292,11 +292,22 @@ function App() {
 
   const canCompare = Boolean(left?.file instanceof File && right?.file instanceof File);
   const comparableGitFiles = useMemo(() => (gitInfo?.files ?? []).filter((file) => file.comparable), [gitInfo]);
+  const gitTargets = useMemo(() => comparableGitFiles.flatMap((file) => {
+    const targets = [{ file, mode: file.kind === "text" ? "text" : "image" }];
+    if (file.kind === "text" && file.embedded_excalidraw) {
+      targets.push({ file, mode: "excalidraw" });
+    }
+    return targets;
+  }), [comparableGitFiles]);
   const exportableGitFiles = useMemo(
     () => comparableGitFiles.filter((file) => !gitExportExcluded.includes(file.path)),
     [comparableGitFiles, gitExportExcluded],
   );
-  const currentGitFile = comparableGitFiles[gitIndex] ?? null;
+  const currentGitTarget = gitTargets[gitIndex] ?? null;
+  const currentGitFile = currentGitTarget?.file ?? null;
+  const currentGitView = currentGitTarget?.mode ?? null;
+  const gitTextMode = activeTab === "git" && currentGitFile?.kind === "text" && currentGitView === "text";
+  const gitImageMode = activeTab === "git" && (currentGitFile?.kind === "image" || currentGitView === "excalidraw");
   const currentTextMemoKey = currentGitFile && gitInfo ? gitMemoKey(gitInfo.repo_root, currentGitFile.path) : "";
   const currentTextMemo = currentTextMemoKey ? gitTextMemos[currentTextMemoKey] ?? "" : "";
   const currentTextDirty = Boolean(
@@ -460,11 +471,11 @@ function App() {
     }
     window.addEventListener("keydown", handleGitKeys);
     return () => window.removeEventListener("keydown", handleGitKeys);
-  }, [activeTab, gitIndex, comparableGitFiles]);
+  }, [activeTab, gitIndex, gitTargets]);
 
   useEffect(() => {
     function handleTextEditKeys(event) {
-      if (activeTab !== "git" || currentGitFile?.kind !== "text") return;
+      if (!gitTextMode) return;
       const modifier = event.ctrlKey || event.metaKey;
       if (!modifier) return;
       if (event.key.toLowerCase() === "s") {
@@ -478,7 +489,7 @@ function App() {
     }
     window.addEventListener("keydown", handleTextEditKeys);
     return () => window.removeEventListener("keydown", handleTextEditKeys);
-  }, [activeTab, currentGitFile, gitItem, gitTextHistory, currentTextDirty]);
+  }, [gitTextMode, currentGitFile, gitItem, gitTextHistory, currentTextDirty]);
 
   useEffect(() => {
     function handleResultViewKeys(event) {
@@ -617,14 +628,14 @@ function App() {
   function selectCategory(nextCategory) {
     setCategory(nextCategory);
     invalidateComparison();
-    if (activeTab === "git" && currentGitFile?.kind === "image" && currentGitFile.diffable) {
+    if (gitImageMode && currentGitFile?.diffable) {
       const requestId = gitRequestIdRef.current + 1;
       gitRequestIdRef.current = requestId;
       setGitResult(null);
       setGitItem(null);
       setGitBusy(true);
       setGitError("");
-      compareGitFile(currentGitFile, requestId, nextCategory)
+      compareGitFile(currentGitFile, requestId, nextCategory, gitInfo?.folder || gitFolder, currentGitView)
         .catch((err) => {
           if (requestId === gitRequestIdRef.current) setGitError(err.message);
         })
@@ -749,7 +760,7 @@ function App() {
 
   return (
     <main
-      className={`app-shell ${activeTab === "git" && currentGitFile?.kind === "text" ? "text-diff-mode" : ""}`}
+      className={`app-shell ${gitTextMode ? "text-diff-mode" : ""}`}
       style={{ zoom: displayScale, height: `${100 / displayScale}vh` }}
     >
       <header className="app-header">
@@ -925,7 +936,9 @@ function App() {
             }}
             info={gitInfo}
             files={comparableGitFiles}
+            targets={gitTargets}
             currentFile={currentGitFile}
+            currentView={currentGitView}
             index={gitIndex}
             busy={gitBusy}
             onLoad={loadGitImages}
@@ -966,7 +979,7 @@ function App() {
             onClose={() => setExportSelectionOpen(false)}
           />
         )}
-        {(activeTab === "files" || currentGitFile?.kind === "image") && <div className="control">
+        {(activeTab === "files" || gitImageMode) && <div className="control">
           <span>カテゴリ</span>
           <div className="segmented">
             {CATEGORIES.map((item) => (
@@ -976,7 +989,7 @@ function App() {
             ))}
           </div>
         </div>}
-        {(activeTab === "files" || currentGitFile?.kind === "image") && <div className="control">
+        {(activeTab === "files" || gitImageMode) && <div className="control">
           <span>表示</span>
           <div className="segmented">
             {VIEWS.map((item) => (
@@ -986,7 +999,7 @@ function App() {
             ))}
           </div>
         </div>}
-        {(activeTab === "files" || currentGitFile?.kind === "image") && <label className="control threshold-control">
+        {(activeTab === "files" || gitImageMode) && <label className="control threshold-control">
           <span>差分しきい値 {diffThreshold.toFixed(2)}</span>
           <input
             type="range"
@@ -1004,7 +1017,7 @@ function App() {
             {anchorRegion ? `${anchorRegion.label}を使用` : `${left?.regions?.length ?? 0}候補`}
           </button>
         </div>}
-        {(activeTab === "files" || currentGitFile?.kind === "image") && <div className="icon-group" aria-label="zoom">
+        {(activeTab === "files" || gitImageMode) && <div className="icon-group" aria-label="zoom">
           <button title="縮小" onClick={() => setZoom((value) => Math.max(0.25, value - 0.1))}>
             <ZoomOut size={18} />
           </button>
@@ -1038,7 +1051,7 @@ function App() {
         </div>
       )}
 
-      {(activeTab === "files" || currentGitFile?.kind === "image") && <section className="summary">
+      {(activeTab === "files" || gitImageMode) && <section className="summary">
         <Stat label="差分ピクセル" value={activeResult ? activeResult.diff_pixels.toLocaleString() : "-"} />
         <Stat label="差分率" value={activeResult ? `${(activeResult.diff_ratio * 100).toFixed(3)}%` : "-"} />
         <Stat label="しきい値" value={activeResult ? activeResult.diff_threshold.toFixed(2) : diffThreshold.toFixed(2)} />
@@ -1046,7 +1059,7 @@ function App() {
         <Stat label="矩形" value={activeResult ? activeResult.diff_rects.length : "-"} />
       </section>}
 
-      {activeTab === "git" && currentGitFile?.kind === "text" ? (
+      {gitTextMode ? (
         <TextDiffView
           file={currentGitFile}
           item={gitItem}
@@ -1118,7 +1131,7 @@ function App() {
       const nextFiles = (info.files ?? []).filter((file) => file.comparable);
       setGitIndex(0);
       if (nextFiles[0]) {
-        await loadGitFile(nextFiles[0], requestId, info.folder || folder);
+        await loadGitFile(nextFiles[0], requestId, info.folder || folder, nextFiles[0].kind === "text" ? "text" : "image");
       }
     } catch (err) {
       if (requestId === gitRequestIdRef.current) setGitError(err.message);
@@ -1128,9 +1141,17 @@ function App() {
   }
 
   async function selectGitIndex(nextIndex) {
-    if (!comparableGitFiles.length) return;
-    const wrappedIndex = (nextIndex + comparableGitFiles.length) % comparableGitFiles.length;
+    if (!gitTargets.length) return;
+    const wrappedIndex = (nextIndex + gitTargets.length) % gitTargets.length;
+    const target = gitTargets[wrappedIndex];
     setGitIndex(wrappedIndex);
+    if (target.file.path === currentGitFile?.path) {
+      if (target.mode === currentGitView) return;
+      if (target.mode === "text" && gitItem) {
+        setGitResult(null);
+        return;
+      }
+    }
     const requestId = gitRequestIdRef.current + 1;
     gitRequestIdRef.current = requestId;
     setGitBusy(true);
@@ -1138,7 +1159,7 @@ function App() {
     setGitResult(null);
     setGitItem(null);
     try {
-      await loadGitFile(comparableGitFiles[wrappedIndex], requestId);
+      await loadGitFile(target.file, requestId, undefined, target.mode);
     } catch (err) {
       if (requestId === gitRequestIdRef.current) setGitError(err.message);
     } finally {
@@ -1146,22 +1167,29 @@ function App() {
     }
   }
 
-  async function compareGitFile(file, requestId = gitRequestIdRef.current, selectedCategory = category, folderOverride = gitInfo?.folder || gitFolder) {
+  async function compareGitFile(
+    file,
+    requestId = gitRequestIdRef.current,
+    selectedCategory = category,
+    folderOverride = gitInfo?.folder || gitFolder,
+    targetMode = "image",
+  ) {
     const nextResult = await postJson("/git/diff", {
       folder: folderOverride,
       path: file.path,
       head_path: file.head_path,
       category: selectedCategory,
       diff_threshold: diffThreshold,
+      ...(targetMode === "excalidraw" ? { subresource: "excalidraw" } : {}),
     });
     if (requestId === gitRequestIdRef.current) {
       setGitResult(nextResult);
     }
   }
 
-  async function loadGitFile(file, requestId = gitRequestIdRef.current, folderOverride = gitInfo?.folder || gitFolder) {
-    if (file.kind === "image" && file.diffable) {
-      await compareGitFile(file, requestId, category, folderOverride);
+  async function loadGitFile(file, requestId = gitRequestIdRef.current, folderOverride = gitInfo?.folder || gitFolder, targetMode = file.kind === "text" ? "text" : "image") {
+    if ((file.kind === "image" || targetMode === "excalidraw") && file.diffable) {
+      await compareGitFile(file, requestId, targetMode === "excalidraw" ? "図面" : category, folderOverride, targetMode);
       return;
     }
     const nextItem = await postJson("/git/item", {
@@ -1818,7 +1846,9 @@ function GitToolbar({
   onSelectFolder,
   info,
   files,
+  targets,
   currentFile,
+  currentView,
   index,
   busy,
   onLoad,
@@ -1886,21 +1916,21 @@ function GitToolbar({
         読み込み
       </button>
       <div className="git-nav">
-        <button title="前のファイル" disabled={!files.length || busy} onClick={onPrevious}>
+        <button title="前の差分対象" disabled={!targets.length || busy} onClick={onPrevious}>
           <ChevronLeft size={18} />
         </button>
-        <select value={files.length ? index : ""} disabled={!files.length || busy} onChange={(event) => onSelect(Number(event.target.value))}>
-          {files.length ? (
-            files.map((file, fileIndex) => (
-              <option key={file.path} value={fileIndex}>
-                {fileIndex + 1}. {file.path}
+        <select value={targets.length ? index : ""} disabled={!targets.length || busy} onChange={(event) => onSelect(Number(event.target.value))}>
+          {targets.length ? (
+            targets.map((target, targetIndex) => (
+              <option key={`${target.file.path}:${target.mode}`} value={targetIndex}>
+                {targetIndex + 1}. {target.file.path}{target.mode === "excalidraw" ? " / Excalidraw" : target.mode === "text" ? " / テキスト" : ""}
               </option>
             ))
           ) : (
             <option value="">対象ファイルなし</option>
           )}
         </select>
-        <button title="次のファイル" disabled={!files.length || busy} onClick={onNext}>
+        <button title="次の差分対象" disabled={!targets.length || busy} onClick={onNext}>
           <ChevronRight size={18} />
         </button>
         <button title="再読み込み" disabled={!folder || busy} onClick={() => onLoad()}>
@@ -1919,9 +1949,9 @@ function GitToolbar({
         HTML出力対象 ({exportCount}/{files.length})
       </button>
       <div className="git-meta">
-        <strong>{currentFile?.path ?? "未選択"}</strong>
+        <strong>{currentFile?.path ?? "未選択"}{currentView === "excalidraw" ? " / Excalidraw" : currentView === "text" ? " / テキスト" : ""}</strong>
         <small>
-          {info ? `${files.length}件の変更 / HTML出力 ${exportCount}件` : "git管理フォルダを指定"}
+          {info ? `${targets.length}件の差分対象（変更${files.length}件） / HTML出力 ${exportCount}件` : "git管理フォルダを指定"}
           {info?.source_markdown ? " / Markdown起点で関連ファイルのみ" : ""}
         </small>
       </div>

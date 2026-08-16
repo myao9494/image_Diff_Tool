@@ -579,6 +579,17 @@ def _extract_excalidraw_json(content: bytes) -> dict:
     raise ConversionError("Could not find Excalidraw JSON in markdown")
 
 
+def extract_excalidraw_json(content: bytes) -> dict:
+    """Extract the Excalidraw payload from an Obsidian markdown note.
+
+    The renderer historically kept this parser private because uploads called
+    it internally. Git-backed Markdown notes also need the same parser when a
+    note contains an embedded ``compressed-json`` drawing block, so expose a
+    small validated entry point for that workflow.
+    """
+    return _extract_excalidraw_json(content)
+
+
 def _decompress_lz_string_base64(value: str) -> str | None:
     compressed = "".join(value.split())
     if not compressed:
@@ -705,7 +716,8 @@ def _draw_excalidraw_element(draw: ImageDraw.ImageDraw, element: dict) -> None:
     elif kind in {"line", "arrow", "freedraw"}:
         points = element.get("points") or []
         if points:
-            pts = [(x + float(px), y + float(py)) for px, py in points]
+            local_points = [(float(point[0]), float(point[1])) for point in points if len(point) >= 2]
+            pts = [(x + px, y + py) for px, py in _smooth_excalidraw_points(local_points)]
             draw.line(pts, fill=line_color, width=stroke, joint="curve")
     elif kind == "text":
         text = element.get("text") or ""
@@ -731,6 +743,39 @@ def _excalidraw_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default(size=size)
 
 
+def _smooth_excalidraw_points(points: list[tuple[float, float]], subdivisions: int = 16) -> list[tuple[float, float]]:
+    """Approximate Excalidraw/Rough.js rounded line joins with a smooth spline."""
+    if len(points) < 3:
+        return points
+    subdivisions = max(2, int(subdivisions))
+    smoothed: list[tuple[float, float]] = []
+    for index in range(len(points) - 1):
+        p0 = points[index - 1] if index > 0 else points[index]
+        p1 = points[index]
+        p2 = points[index + 1]
+        p3 = points[index + 2] if index + 2 < len(points) else p2
+        for step in range(subdivisions):
+            t = step / subdivisions
+            t2 = t * t
+            t3 = t2 * t
+            smoothed.append((
+                0.5 * (
+                    2 * p1[0]
+                    + (-p0[0] + p2[0]) * t
+                    + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                    + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+                ),
+                0.5 * (
+                    2 * p1[1]
+                    + (-p0[1] + p2[1]) * t
+                    + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                    + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+                ),
+            ))
+    smoothed.append(points[-1])
+    return smoothed
+
+
 def _translated_element(element: dict, offset_x: float, offset_y: float) -> dict:
     translated = dict(element)
     translated["x"] = float(element.get("x", 0)) + offset_x
@@ -743,7 +788,20 @@ def _element_bounds(elements: list[dict]) -> tuple[float, float, float, float] |
     for el in elements:
         x = float(el.get("x", 0))
         y = float(el.get("y", 0))
-        boxes.append((x, y, x + float(el.get("width", 0)), y + float(el.get("height", 0))))
+        width = float(el.get("width", 0))
+        height = float(el.get("height", 0))
+        points = el.get("points") or []
+        if el.get("type") in {"line", "arrow", "freedraw"} and points:
+            # Excalidraw stores line points relative to (x, y), and a
+            # hand-drawn line may legitimately leave the element's nominal
+            # rectangle (for example, a point can have a negative y). The
+            # nominal width/height alone would crop that part of the drawing.
+            point_xs = [x + float(point[0]) for point in points if len(point) >= 2]
+            point_ys = [y + float(point[1]) for point in points if len(point) >= 2]
+            if point_xs and point_ys:
+                boxes.append((min(x, *point_xs), min(y, *point_ys), max(x + width, *point_xs), max(y + height, *point_ys)))
+                continue
+        boxes.append((x, y, x + width, y + height))
     if not boxes:
         return None
     return (

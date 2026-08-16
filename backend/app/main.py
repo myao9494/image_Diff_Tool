@@ -26,6 +26,7 @@ from .image_io import (
     cv_to_pil,
     decode_png,
     encode_png,
+    extract_excalidraw_json,
     pil_to_cv,
 )
 from .models import AlignmentInfo, AnalyzeResponse, DiffResponse, ImagePayload, PageInfo, RediffRequest, RediffResponse
@@ -71,6 +72,7 @@ MAX_TEXT_BYTES = 5 * 1024 * 1024
 MAX_TEXT_DIFF_LINES = 30_000
 MAX_INLINE_DIFF_CHARS = 20_000
 EXTENSION_RE = re.compile(r"^\.[a-z0-9][a-z0-9._+-]{0,15}$")
+EXCALIDRAW_PLUGIN_MARKER_RE = re.compile(r"(?im)^\s*excalidraw-plugin\s*:\s*parsed\s*$")
 READ_CHUNK_SIZE = 1024 * 1024
 DUBIOUS_OWNERSHIP_RE = re.compile(r"detected dubious ownership in repository at '([^']+)'")
 WIKI_LINK_RE = re.compile(r"!?\[\[([^\]]+)\]\]")
@@ -417,7 +419,7 @@ def git_item(payload: dict) -> JSONResponse:
     else:
         old_text, old_encoding = _decode_git_text(previous) if previous is not None else ("", None)
         new_text, new_encoding = _decode_git_text(current) if current is not None else ("", None)
-        response.update({"encoding_head": old_encoding, "encoding_current": new_encoding, "rows": _build_text_diff_rows(old_text, new_text)})
+        response.update({"encoding_head": old_encoding, "encoding_current": new_encoding, "rows": _build_markdown_text_diff_rows(old_text, new_text)})
         if payload.get("include_text", True):
             response.update({"text_head": old_text, "text_current": new_text})
     return JSONResponse(response)
@@ -437,7 +439,7 @@ def git_text_diff(payload: dict) -> JSONResponse:
     previous = _git_show(repo, head_rel_path, max_bytes=MAX_TEXT_BYTES) if has_head else None
     old_text, _ = _decode_git_text(previous) if previous is not None else ("", "utf-8")
     new_text = str(payload.get("text") or "")
-    return JSONResponse({"path": rel_path, "rows": _build_text_diff_rows(old_text, new_text), "text_current": new_text})
+    return JSONResponse({"path": rel_path, "rows": _build_markdown_text_diff_rows(old_text, new_text), "text_current": new_text})
 
 
 @app.post("/api/git/save-text")
@@ -487,7 +489,7 @@ def save_git_text(payload: dict) -> JSONResponse:
         {
             "path": rel_path,
             "text_current": normalized_text,
-            "rows": _build_text_diff_rows(old_text, normalized_text),
+            "rows": _build_markdown_text_diff_rows(old_text, normalized_text),
             "encoding_current": current_encoding,
         }
     )
@@ -524,7 +526,7 @@ def git_revert_line(payload: dict) -> JSONResponse:
         raise HTTPException(status_code=422, detail="Diff row indexes are required")
 
     candidates = [
-        row for row in _build_text_diff_rows(old_text, new_text)
+        row for row in _build_markdown_text_diff_rows(old_text, new_text)
         if row.get("kind") == requested.get("kind")
         and row.get("old") == requested.get("old")
         and row.get("new") == requested.get("new")
@@ -566,7 +568,7 @@ def git_revert_line(payload: dict) -> JSONResponse:
         except OSError:
             pass
         raise HTTPException(status_code=500, detail="Could not update the working-tree file") from exc
-    return JSONResponse({"path": rel_path, "rows": _build_text_diff_rows(old_text, restored_text)})
+    return JSONResponse({"path": rel_path, "rows": _build_markdown_text_diff_rows(old_text, restored_text)})
 
 
 @app.post("/api/git/diff", response_model=DiffResponse)
@@ -576,6 +578,27 @@ def git_diff(payload: dict) -> DiffResponse:
     path = str(payload.get("path") or "")
     if not path:
         raise HTTPException(status_code=422, detail="path is required")
+    subresource = str(payload.get("subresource") or "").strip().lower()
+    if subresource == "excalidraw":
+        rel_path = _safe_git_path(repo, path, restrict_to_images=False)
+        if not rel_path.lower().endswith(".md"):
+            raise HTTPException(status_code=422, detail="Excalidraw subresource requires a Markdown file")
+        current_path = repo / rel_path
+        if not current_path.exists() or not current_path.is_file():
+            raise HTTPException(status_code=404, detail=f"Current file not found: {rel_path}")
+        head_path = str(payload.get("head_path") or path)
+        head_rel_path = _safe_git_path(repo, head_path, restrict_to_images=False)
+        previous = _git_show(repo, head_rel_path, max_bytes=MAX_TEXT_BYTES)
+        current = _read_file_limited(current_path, MAX_TEXT_BYTES, rel_path)
+        return _build_diff_response(
+            filename_a=f"HEAD:{head_rel_path}.excalidraw",
+            content_a=_embedded_excalidraw_json_bytes(previous),
+            filename_b=f"{rel_path}.excalidraw",
+            content_b=_embedded_excalidraw_json_bytes(current),
+            category=str(payload.get("category") or "図面"),
+            diff_threshold=float(payload.get("diff_threshold") or 0.1),
+        )
+
     rel_path = _safe_git_path(repo, path)
     head_path = str(payload.get("head_path") or path)
     head_rel_path = _safe_git_path(repo, head_path)
@@ -1026,6 +1049,15 @@ def _changed_files(repo: Path, folder: Path, text_extensions: set[str]) -> list[
                 "diffable": has_head and has_current,
                 "comparable": True,
                 "reason": None,
+                "embedded_excalidraw": _has_embedded_excalidraw(
+                    repo,
+                    path,
+                    head_path,
+                    has_head=has_head,
+                    has_current=has_current,
+                )
+                if kind == "text"
+                else False,
             }
         )
     return files
@@ -1052,6 +1084,41 @@ def _git_file_kind(path: str, text_extensions: set[str]) -> str | None:
     if _is_git_image_path(path):
         return "image"
     return "text" if Path(path).suffix.lower() in text_extensions else None
+
+
+def _has_embedded_excalidraw(
+    repo: Path,
+    current_rel_path: str,
+    head_rel_path: str,
+    *,
+    has_head: bool,
+    has_current: bool,
+) -> bool:
+    """Return whether either side of a Markdown diff contains an Excalidraw block."""
+    if not current_rel_path.lower().endswith(".md"):
+        return False
+    contents: list[bytes] = []
+    current_path = repo / current_rel_path
+    if has_current and current_path.is_file():
+        contents.append(_read_file_limited(current_path, MAX_TEXT_BYTES, current_rel_path))
+    if has_head:
+        try:
+            contents.append(_git_show(repo, head_rel_path, max_bytes=MAX_TEXT_BYTES))
+        except HTTPException:
+            pass
+    return any(EXCALIDRAW_PLUGIN_MARKER_RE.search(content.decode("utf-8", errors="ignore")) for content in contents)
+
+
+def _embedded_excalidraw_json_bytes(content: bytes) -> bytes:
+    """Extract a note's drawing as standalone JSON for the normal image pipeline."""
+    text = content.decode("utf-8", errors="ignore")
+    if not EXCALIDRAW_PLUGIN_MARKER_RE.search(text):
+        return b'{"type":"excalidraw","elements":[],"appState":{}}'
+    try:
+        payload = extract_excalidraw_json(content)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not find Excalidraw JSON in Markdown: {exc}") from exc
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
 def _text_extensions_from_payload(payload: dict) -> set[str]:
@@ -1142,6 +1209,63 @@ def _build_text_diff_rows(old_text: str, new_text: str) -> list[dict]:
             }
         )
     return rows
+
+
+EXCALIDRAW_DATA_HEADING_RE = re.compile(r"(?i)^\s{0,3}#{1,6}\s+excalidraw\s+data\s*$")
+EXCALIDRAW_FENCE_RE = re.compile(r"(?i)^\s*```(?:compressed-json|json)\s*$")
+
+
+def _build_markdown_text_diff_rows(old_text: str, new_text: str) -> list[dict]:
+    """Build text rows while hiding embedded Excalidraw source lines.
+
+    The rows keep their original line indexes. This lets the existing editor
+    and safe one-line restore operation continue to edit the real Markdown
+    file even though the large drawing payload is omitted from the display.
+    """
+    rows = _build_text_diff_rows(old_text, new_text)
+    old_hidden = _embedded_excalidraw_line_indexes(old_text)
+    new_hidden = _embedded_excalidraw_line_indexes(new_text)
+    if not old_hidden and not new_hidden:
+        return rows
+    return [
+        row for row in rows
+        if row.get("old_index") not in old_hidden and row.get("new_index") not in new_hidden
+    ]
+
+
+def _embedded_excalidraw_line_indexes(text: str) -> set[int]:
+    lines = text.splitlines()
+    if not lines:
+        return set()
+    if not EXCALIDRAW_PLUGIN_MARKER_RE.search(text):
+        return set()
+
+    for index, line in enumerate(lines):
+        if EXCALIDRAW_DATA_HEADING_RE.match(line):
+            # Keep the heading visible; only the embedded drawing source
+            # below it is omitted from the text diff.
+            return set(range(index + 1, len(lines)))
+
+    # Support notes that use the plugin marker and a drawing fence without the
+    # standard ``# Excalidraw Data`` heading. Do not hide arbitrary JSON blocks
+    # in ordinary Markdown: only treat a fence as drawing data when the note
+    # contains the plugin's parsed marker.
+    hidden: set[int] = set()
+    index = 0
+    while index < len(lines):
+        if not EXCALIDRAW_FENCE_RE.match(lines[index]):
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and not lines[end].strip().startswith("```"):
+            end += 1
+        if end < len(lines):
+            hidden.update(range(index, end + 1))
+            index = end + 1
+        else:
+            hidden.update(range(index, len(lines)))
+            break
+    return hidden
 
 
 def _inline_diff_segments(old_line: str, new_line: str, side: str) -> list[dict]:

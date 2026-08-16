@@ -14,7 +14,7 @@ from PIL import Image
 
 from backend.app.attachments import ATTACHMENTS_DIR, cleanup_expired_attachments
 from backend.app.diffing import build_visual_diff
-from backend.app.image_io import _decompress_lz_string_base64, _prepare_svg_for_rasterization, rasterize_upload_page
+from backend.app.image_io import _decompress_lz_string_base64, _prepare_svg_for_rasterization, _smooth_excalidraw_points, rasterize_upload_page
 from backend.app.main import _build_text_diff_rows, _git, _run_git_process, app
 from backend.app.result_cache import store_diff_images
 
@@ -322,6 +322,34 @@ class TestBackendPipeline(unittest.TestCase):
         _, page = rasterize_upload_page("background.excalidraw", json.dumps(payload).encode("utf-8"))
 
         self.assertEqual(page.image.getpixel((0, 0)), (18, 52, 86))
+
+    def test_excalidraw_line_points_outside_nominal_bounds_are_not_cropped(self):
+        payload = {
+            "type": "excalidraw",
+            "elements": [{
+                "id": "stem",
+                "type": "line",
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 10,
+                "points": [[0, 0], [40, -120], [100, -80]],
+                "strokeColor": "#000000",
+                "strokeWidth": 2,
+                "isDeleted": False,
+            }],
+            "appState": {},
+        }
+        _, page = rasterize_upload_page("line.excalidraw", json.dumps(payload).encode("utf-8"))
+        self.assertGreaterEqual(page.image.height, 280)
+
+    def test_excalidraw_line_points_are_interpolated_for_smooth_joins(self):
+        points = [(0.0, 0.0), (25.0, 40.0), (100.0, 30.0)]
+        smoothed = _smooth_excalidraw_points(points)
+        self.assertGreater(len(smoothed), len(points))
+        self.assertEqual(smoothed[0], points[0])
+        self.assertEqual(smoothed[-1], points[-1])
+        self.assertTrue(any(0 < point[0] < 25 and point[1] > 0 for point in smoothed))
 
     def test_diff_accepts_anchor_region(self):
         anchor_region = {"x": 0, "y": 0, "width": 800, "height": 600, "label": "全体枠候補"}
@@ -759,6 +787,70 @@ class TestBackendPipeline(unittest.TestCase):
             diff_response = self.client.post("/api/git/diff", json={"folder": tmp, **item})
             self.assertEqual(diff_response.status_code, 200, diff_response.text)
             self.assertGreater(diff_response.json()["diff_pixels"], 0)
+
+    def test_git_markdown_exposes_embedded_excalidraw_as_separate_diff_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            note_path = os.path.join(tmp, "りんご.md")
+            base_payload = {
+                "type": "excalidraw",
+                "elements": [{
+                    "id": "box",
+                    "type": "rectangle",
+                    "x": 10,
+                    "y": 10,
+                    "width": 80,
+                    "height": 50,
+                    "strokeColor": "#000000",
+                    "backgroundColor": "transparent",
+                    "strokeWidth": 2,
+                    "isDeleted": False,
+                }],
+                "appState": {},
+            }
+
+            def write_note(payload, body="りんご"):
+                with open(note_path, "w", encoding="utf-8") as stream:
+                    stream.write("---\nexcalidraw-plugin: parsed\n---\n\n")
+                    stream.write(f"{body}\n\n# Excalidraw Data\n## Drawing\n```json\n")
+                    stream.write(json.dumps(payload))
+                    stream.write("\n```\n")
+
+            write_note(base_payload)
+            self._git(tmp, "init", "--quiet")
+            self._git(tmp, "config", "user.email", "review@example.com")
+            self._git(tmp, "config", "user.name", "Review")
+            self._git(tmp, "add", "りんご.md")
+            self._git(tmp, "commit", "--quiet", "-m", "initial note")
+            changed_payload = json.loads(json.dumps(base_payload))
+            changed_payload["elements"][0]["width"] = 140
+            write_note(changed_payload, body="りんご（更新）")
+
+            files_response = self.client.post(
+                "/api/git/files",
+                json={"folder": tmp, "text_extensions": [".md"]},
+            )
+            self.assertEqual(files_response.status_code, 200, files_response.text)
+            item = files_response.json()["files"][0]
+            self.assertEqual(item["kind"], "text")
+            self.assertTrue(item["embedded_excalidraw"])
+
+            text_item_response = self.client.post(
+                "/api/git/item",
+                json={"folder": tmp, "text_extensions": [".md"], "include_text": True, **item},
+            )
+            self.assertEqual(text_item_response.status_code, 200, text_item_response.text)
+            text_rows = text_item_response.json()["rows"]
+            self.assertTrue(any("りんご（更新）" in (row.get("new") or "") for row in text_rows))
+            self.assertTrue(any("# Excalidraw Data" in (row.get("new") or "") for row in text_rows))
+            self.assertFalse(any("## Drawing" in (row.get("new") or "") for row in text_rows))
+            self.assertFalse(any("```json" in (row.get("new") or "") for row in text_rows))
+
+            drawing_response = self.client.post(
+                "/api/git/diff",
+                json={"folder": tmp, **item, "subresource": "excalidraw"},
+            )
+            self.assertEqual(drawing_response.status_code, 200, drawing_response.text)
+            self.assertGreater(drawing_response.json()["diff_pixels"], 0)
 
     def test_git_item_rejects_large_text_before_diffing(self):
         with tempfile.TemporaryDirectory() as tmp:

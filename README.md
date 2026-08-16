@@ -9,7 +9,7 @@ The first implementation focuses on the web app and local Backend API. VSCode ex
 - Upload or paste two inputs and preview the selected page before comparing.
 - Compare PNG, JPEG, WebP, BMP, GIF, SVG, PDF, TIFF, Excalidraw JSON, and Obsidian Excalidraw Markdown. Git treats `*.excalidraw.md` and `*_excalidraw.md` as images and decodes Obsidian's `compressed-json` drawing block.
 - Select pages independently for multi-page PDF/TIFF inputs.
-- Compare changed image and text files in a local Git working tree, including additions, deletions, untracked files, and staged renames where the HEAD-side path differs.
+- Compare changed image and text files in a local Git working tree, including additions, deletions, untracked files, and staged renames where the HEAD-side path differs. Markdown notes with `excalidraw-plugin: parsed` expose both a text diff and a separate embedded Excalidraw image diff; Git arrow-key navigation cycles through both targets.
 - Show text changes in a VS Code-style side-by-side view with line numbers, strongly colored added/deleted rows, visible empty-side gaps, and inline character highlighting. Text extensions are configurable from the hamburger menu and saved locally in the browser.
 - Add image annotations or per-file text memos from the Git tab, choose whether each changed file is included, then export the selected changes as one static, self-contained HTML report. Images, annotations, CSS, and the small content-zoom script are embedded; the report does not load external scripts, fonts, or any other network resources.
 - Align image B to image A with staged OpenCV feature matching and ECC refinement.

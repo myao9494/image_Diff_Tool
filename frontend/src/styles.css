@@ -945,6 +945,8 @@ select {
 .text-diff-columns {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr);
+  grid-auto-rows: minmax(24px, auto);
+  align-items: stretch;
   overflow: auto;
   flex: 1 1 auto;
   min-height: 0;
@@ -971,6 +973,9 @@ select {
 
 .diff-code-cell {
   min-width: 0;
+  min-height: 24px;
+  height: 100%;
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr);
   border-bottom: 1px solid #283548;
@@ -988,6 +993,8 @@ select {
 
 .diff-code-cell code {
   min-width: 0;
+  min-height: 24px;
+  box-sizing: border-box;
   display: block;
   padding: 1px 7px;
   color: #dbeafe;
@@ -1000,7 +1007,7 @@ select {
 .diff-line-editor-wrap {
   position: relative;
   min-width: 0;
-  min-height: 18px;
+  min-height: 22px;
   display: block;
 }
 
@@ -1024,7 +1031,7 @@ select {
   position: relative;
   z-index: 1;
   width: 100%;
-  min-height: 18px;
+  min-height: 22px;
   margin: 0;
   padding: 0;
   border: 0;
